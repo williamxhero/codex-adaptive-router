@@ -2,14 +2,14 @@
   "name": "quant",
   "description": "Quantitative research, backtesting, and strategy-development profile. Low-cost agents collect evidence; Sol agents own research and market-semantic conclusions.",
   "roles": {
-    "direct": { "model": "gpt-5.6", "effort": "medium" },
+    "direct": { "model": "gpt-5.6-sol", "effort": "medium" },
     "router_code_mapper": { "model": "gpt-5.6-luna", "effort": "medium" },
     "router_experiment_runner": { "model": "gpt-5.6-luna", "effort": "medium" },
     "router_research_engineer": { "model": "gpt-5.6-terra", "effort": "high" },
-    "router_researcher": { "model": "gpt-5.6", "effort": "high" },
-    "router_architect": { "model": "gpt-5.6", "effort": "high" },
-    "router_adversarial_auditor": { "model": "gpt-5.6", "effort": "xhigh" },
-    "router_strategy_scout": { "model": "gpt-5.6", "effort": "xhigh" }
+    "router_researcher": { "model": "gpt-5.6-sol", "effort": "high" },
+    "router_architect": { "model": "gpt-5.6-sol", "effort": "high" },
+    "router_adversarial_auditor": { "model": "gpt-5.6-sol", "effort": "xhigh" },
+    "router_strategy_scout": { "model": "gpt-5.6-sol", "effort": "xhigh" }
   },
   "quality_gates": [
     "Do not accept a strategy from one return metric.",

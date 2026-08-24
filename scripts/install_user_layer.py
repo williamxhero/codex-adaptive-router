@@ -68,7 +68,7 @@ def update_config(path: Path, set_root_model: bool) -> None:
         )
     if set_root_model:
         first_table = next((index for index, line in enumerate(lines) if line.lstrip().startswith("[")), len(lines))
-        replace_or_insert(lines, "model", '"gpt-5.6"', 0, first_table)
+        replace_or_insert(lines, "model", '"gpt-5.6-sol"', 0, first_table)
         first_table = next((index for index, line in enumerate(lines) if line.lstrip().startswith("[")), len(lines))
         replace_or_insert(lines, "model_reasoning_effort", '"medium"', 0, first_table)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ def copy_agents(target: Path) -> list[Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install Codex Adaptive Router's user-level layer with timestamped backups.")
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")))
-    parser.add_argument("--set-root-model", action="store_true", help="Set global root model to gpt-5.6 / medium as well as subagent defaults.")
+    parser.add_argument("--set-root-model", action="store_true", help="Set global root model to gpt-5.6-sol / medium as well as subagent defaults.")
     args = parser.parse_args()
     codex_home = args.codex_home.expanduser().resolve()
     config = codex_home / "config.toml"

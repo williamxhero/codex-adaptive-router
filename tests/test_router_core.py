@@ -31,7 +31,7 @@ class RouterPlanTests(unittest.TestCase):
         plan = router_core.make_route_plan("This strategy Sharpe 3.4 and drawdown 6%; audit whether it is credible.")
         self.assertEqual(plan.profile, "quant")
         self.assertEqual(plan.role, "router_adversarial_auditor")
-        self.assertEqual(plan.model, "gpt-5.6")
+        self.assertEqual(plan.model, "gpt-5.6-sol")
         self.assertEqual(plan.reasoning_effort, "xhigh")
 
 
@@ -57,7 +57,7 @@ class LearningTests(unittest.TestCase):
                     "escalated",
                     confidence=0.9,
                     replacement_role="router_researcher",
-                    replacement_model="gpt-5.6",
+                    replacement_model="gpt-5.6-sol",
                     replacement_effort="high",
                     root=root,
                 )
@@ -70,7 +70,7 @@ class LearningTests(unittest.TestCase):
             for _ in range(5):
                 router_core.record_shadow_observation(proposal["proposal_id"], True, root)
             confirmed = router_core.confirm_policy_change(proposal["proposal_id"], True, root)
-            self.assertEqual(confirmed["to"]["model"], "gpt-5.6")
+            self.assertEqual(confirmed["to"]["model"], "gpt-5.6-sol")
             updated = router_core.make_route_plan(
                 "Implement the fee model according to the existing specification.", task_state="frozen", root=root
             )

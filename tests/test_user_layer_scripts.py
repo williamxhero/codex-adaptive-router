@@ -18,7 +18,7 @@ class UserLayerScriptsTests(unittest.TestCase):
             codex_home = Path(directory) / "codex-home"
             agents = codex_home / "agents"
             agents.mkdir(parents=True)
-            (agents / "other_agent.toml").write_text('model = "gpt-5.6"\n', encoding="utf-8")
+            (agents / "other_agent.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
             (codex_home / "config.toml").write_text("approval_policy = \"never\"\n", encoding="utf-8")
 
             subprocess.run(
@@ -28,7 +28,7 @@ class UserLayerScriptsTests(unittest.TestCase):
                 check=True,
             )
             config = (codex_home / "config.toml").read_text(encoding="utf-8")
-            self.assertIn('model = "gpt-5.6"', config)
+            self.assertIn('model = "gpt-5.6-sol"', config)
             self.assertIn('model_reasoning_effort = "medium"', config)
             self.assertIn("[agents]", config)
             self.assertEqual(len(list(agents.glob("router_*.toml"))), 7)

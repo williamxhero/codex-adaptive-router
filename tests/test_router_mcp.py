@@ -46,9 +46,30 @@ class RouterMcpTests(unittest.TestCase):
             )
         replies = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "codex-adaptive-router")
+        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "1.0.1")
         payload = replies[1]["result"]["structuredContent"]
         self.assertEqual(payload["role"], "router_code_mapper")
         self.assertEqual(payload["model"], "gpt-5.6-luna")
+
+    def test_replacement_model_schema_uses_runtime_sol_slug(self) -> None:
+        messages = "\n".join(
+            [
+                json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+                json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, str(SERVER)],
+            input=messages + "\n",
+            text=True,
+            capture_output=True,
+            cwd=PLUGIN_ROOT,
+            check=True,
+        )
+        replies = [json.loads(line) for line in result.stdout.splitlines()]
+        tools = {tool["name"]: tool for tool in replies[1]["result"]["tools"]}
+        models = tools["record_route_outcome"]["inputSchema"]["properties"]["replacement_model"]["enum"]
+        self.assertEqual(models, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
 
     @unittest.skipUnless(os.name == "nt", "Windows hook wrapper is platform-specific")
     def test_windows_hook_wrapper_returns_preflight_context(self) -> None:

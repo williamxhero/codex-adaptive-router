@@ -1,6 +1,6 @@
 {
   "name": "codex-adaptive-router",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Local, evidence-driven model and reasoning router for Codex.",
   "author": {
     "name": "williamxhero"

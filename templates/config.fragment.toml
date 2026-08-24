@@ -1,6 +1,6 @@
 # Merge this fragment into ~/.codex/config.toml through scripts/install_user_layer.py.
 # Project .codex/config.toml files may still override these defaults.
-model = "gpt-5.6"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "medium"
 
 [agents]
