@@ -10,10 +10,8 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
@@ -21,7 +19,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 def backup(path: Path) -> Path | None:
     if not path.exists():
         return None
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     destination = path.with_name(path.name + f".adaptive-router.{stamp}.bak")
     suffix = 2
     while destination.exists():

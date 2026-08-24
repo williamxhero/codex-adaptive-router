@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import hmac
 import json
@@ -10,6 +11,7 @@ import math
 import os
 import re
 import secrets
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -69,6 +71,188 @@ KNOWN_RISK_DOMAINS = {
     "legal",
     "medical",
 }
+VALID_ROLES = {
+    "direct",
+    "router_code_mapper",
+    "router_experiment_runner",
+    "router_research_engineer",
+    "router_researcher",
+    "router_architect",
+    "router_adversarial_auditor",
+    "router_strategy_scout",
+}
+VERIFICATION_KINDS = {"tests", "build", "static_validation", "review"}
+HOOK_EVENTS = {
+    "PostToolUse",
+    "SubagentStart",
+    "SubagentStop",
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "SessionEnd",
+}
+HEX_ID = re.compile(r"^[0-9a-f]{24,64}$")
+DEDUPE_ID = re.compile(r"^[A-Za-z0-9:._-]{1,180}$")
+
+
+def _strict_object(value: Any, allowed: set[str], required: set[str], name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{name} must be an object")
+    extra = set(value) - allowed
+    missing = required - set(value)
+    if extra or missing:
+        raise ValueError(f"{name} has invalid fields; extra={sorted(extra)}, missing={sorted(missing)}")
+    return value
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def validate_constraints(value: Any) -> dict[str, Any]:
+    constraints = _strict_object(
+        value or {}, {"role", "model", "reasoning_effort", "no_delegation"}, set(), "constraints"
+    )
+    if "role" in constraints and constraints["role"] not in VALID_ROLES:
+        raise ValueError("constraints.role is invalid")
+    if "model" in constraints and constraints["model"] not in VALID_MODELS:
+        raise ValueError("constraints.model is invalid")
+    if "reasoning_effort" in constraints and constraints["reasoning_effort"] not in VALID_EFFORTS:
+        raise ValueError("constraints.reasoning_effort is invalid")
+    if "no_delegation" in constraints and type(constraints["no_delegation"]) is not bool:
+        raise ValueError("constraints.no_delegation must be boolean")
+    return dict(constraints)
+
+
+def validate_decision_features(value: Any) -> dict[str, Any]:
+    required = {
+        "operation_mode", "scope", "spec_state", "reversibility", "cognitive_type",
+        "risk_domains", "workload", "user_constraints", "feature_source", "confidence",
+    }
+    features = _strict_object(value, required, required, "decision_features")
+    for key, allowed in FEATURE_VALUES.items():
+        if features[key] not in allowed:
+            raise ValueError(f"decision_features.{key} is invalid")
+    if not isinstance(features["risk_domains"], list) or any(
+        not isinstance(item, str) or item not in KNOWN_RISK_DOMAINS for item in features["risk_domains"]
+    ):
+        raise ValueError("decision_features.risk_domains is invalid")
+    if not isinstance(features["user_constraints"], list) or any(
+        item not in {"role", "model", "reasoning_effort", "no_delegation"}
+        for item in features["user_constraints"]
+    ):
+        raise ValueError("decision_features.user_constraints is invalid")
+    if features["feature_source"] not in {"structured_heuristic", "caller_supplied", "legacy_v1"}:
+        raise ValueError("decision_features.feature_source is invalid")
+    if not _is_number(features["confidence"]) or not 0 <= features["confidence"] <= 1:
+        raise ValueError("decision_features.confidence is invalid")
+    return dict(features)
+
+
+def _validate_transition(value: Any) -> None:
+    transition = _strict_object(
+        value, {"phase", "role", "model", "reasoning_effort"},
+        {"phase", "role", "model", "reasoning_effort"}, "transition"
+    )
+    if transition["phase"] not in {"start", "stop"}:
+        raise ValueError("transition.phase is invalid")
+    if transition["role"] not in VALID_ROLES | {"default", "worker", "explorer", "unknown"}:
+        raise ValueError("transition.role is invalid")
+    if transition["model"] not in VALID_MODELS | {"unknown"}:
+        raise ValueError("transition.model is invalid")
+    if transition["reasoning_effort"] not in VALID_EFFORTS | {"unknown"}:
+        raise ValueError("transition.reasoning_effort is invalid")
+
+
+def _validate_replacement(value: Any) -> None:
+    if value is None:
+        return
+    replacement = _strict_object(
+        value, {"role", "model", "reasoning_effort"}, {"role", "model", "reasoning_effort"}, "replacement"
+    )
+    if replacement["role"] not in VALID_ROLES or replacement["model"] not in VALID_MODELS or replacement["reasoning_effort"] not in VALID_EFFORTS:
+        raise ValueError("replacement route is invalid")
+
+
+def validate_evidence_event(value: Any) -> dict[str, Any]:
+    common = {"schema_version", "event_id", "sequence", "created_at", "dedupe_key", "type"}
+    route = {
+        "task_ref", "task_fingerprint", "route_id", "profile", "task_class", "role", "model",
+        "reasoning_effort", "confidence", "decision_features", "constraints", "policy_revision",
+        "shadow", "session", "project",
+    }
+    execution = {"task_ref", "route_id", "event", "tool_kind", "failed", "verification_kind", "transition"}
+    outcome = {
+        "task_ref", "route_id", "status", "quality_gate", "route_fit", "verification_kinds",
+        "confidence", "evidence_source", "objective_verification", "user_confirmed", "replacement",
+        "high_risk_regression", "retry_band", "rework_band", "tool_band", "duration_band",
+        "token_band", "cost_band",
+    }
+    if not isinstance(value, dict) or value.get("type") not in {"route", "execution", "outcome"}:
+        raise ValueError("evidence event type is invalid")
+    event_type = value["type"]
+    allowed = common | ({"route": route, "execution": execution, "outcome": outcome}[event_type])
+    required = common - {"dedupe_key"} | ({"route": route, "execution": {"task_ref", "route_id", "event"}, "outcome": outcome}[event_type])
+    event = _strict_object(value, allowed, required, f"{event_type} event")
+    if event["schema_version"] != 2 or not isinstance(event["sequence"], int) or isinstance(event["sequence"], bool) or event["sequence"] < 1:
+        raise ValueError("evidence sequence/schema is invalid")
+    try:
+        uuid.UUID(str(event["event_id"]))
+        uuid.UUID(str(event["route_id"]))
+    except (ValueError, AttributeError) as error:
+        raise ValueError("evidence UUID is invalid") from error
+    if not isinstance(event["created_at"], str) or len(event["created_at"]) > 40:
+        raise ValueError("created_at is invalid")
+    if "dedupe_key" in event and (not isinstance(event["dedupe_key"], str) or not DEDUPE_ID.fullmatch(event["dedupe_key"])):
+        raise ValueError("dedupe_key is invalid")
+    for key in ("task_ref",):
+        if key in event and (not isinstance(event[key], str) or not HEX_ID.fullmatch(event[key])):
+            raise ValueError(f"{key} is invalid")
+    if event_type == "route":
+        for key in ("task_fingerprint", "session", "project"):
+            if not isinstance(event[key], str) or not HEX_ID.fullmatch(event[key]):
+                raise ValueError(f"route.{key} is invalid")
+        if event["profile"] not in {"generic", "quant"} or event["task_class"] not in FEATURE_VALUES["cognitive_type"]:
+            raise ValueError("route classification is invalid")
+        if event["role"] not in VALID_ROLES or event["model"] not in VALID_MODELS or event["reasoning_effort"] not in VALID_EFFORTS:
+            raise ValueError("route tuple is invalid")
+        if not _is_number(event["confidence"]) or not 0 <= event["confidence"] <= 1:
+            raise ValueError("route confidence is invalid")
+        if not isinstance(event["policy_revision"], int) or isinstance(event["policy_revision"], bool) or event["policy_revision"] < 1:
+            raise ValueError("policy_revision is invalid")
+        validate_decision_features(event["decision_features"])
+        validate_constraints(event["constraints"])
+        if event["shadow"] is not None:
+            shadow = _strict_object(event["shadow"], {"proposal_id", "axis", "candidate"}, {"proposal_id", "axis", "candidate"}, "shadow")
+            if shadow["axis"] not in {"role", "model", "reasoning_effort"} or not isinstance(shadow["candidate"], str) or len(shadow["candidate"]) > 80:
+                raise ValueError("shadow is invalid")
+    elif event_type == "execution":
+        if event["event"] not in HOOK_EVENTS:
+            raise ValueError("execution event is invalid")
+        if "tool_kind" in event and event["tool_kind"] not in {"shell", "edit", "agent", "mcp", "local", "lifecycle"}:
+            raise ValueError("tool_kind is invalid")
+        if "failed" in event and type(event["failed"]) is not bool:
+            raise ValueError("failed must be boolean")
+        if "verification_kind" in event and event["verification_kind"] is not None and event["verification_kind"] not in VERIFICATION_KINDS:
+            raise ValueError("verification_kind is invalid")
+        if "transition" in event:
+            _validate_transition(event["transition"])
+    else:
+        if event["status"] not in OUTCOME_STATUSES or event["quality_gate"] not in QUALITY_GATES or event["route_fit"] not in ROUTE_FITS:
+            raise ValueError("outcome classification is invalid")
+        if not isinstance(event["verification_kinds"], list) or any(item not in VERIFICATION_KINDS for item in event["verification_kinds"]):
+            raise ValueError("verification_kinds is invalid")
+        if not _is_number(event["confidence"]) or not 0 <= event["confidence"] <= 1:
+            raise ValueError("outcome confidence is invalid")
+        if event["evidence_source"] not in {"objective", "hook_heuristic", "user_explicit", "legacy_v1"}:
+            raise ValueError("evidence_source is invalid")
+        for key in ("objective_verification", "user_confirmed", "high_risk_regression"):
+            if type(event[key]) is not bool:
+                raise ValueError(f"{key} must be boolean")
+        _validate_replacement(event["replacement"])
+        if any(event[key] not in BANDS for key in ("retry_band", "rework_band", "tool_band", "duration_band", "token_band", "cost_band")):
+            raise ValueError("outcome resource band is invalid")
+    return event
 
 
 def utc_now() -> str:
@@ -116,35 +300,160 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return result
 
 
+def _process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        synchronize = 0x00100000
+        wait_object_0 = 0x00000000
+        wait_timeout = 0x00000102
+        error_invalid_parameter = 87
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        handle = kernel32.OpenProcess(synchronize, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER is the documented result for a PID that
+            # does not exist. Access denied and unknown failures are treated as
+            # alive so stale-lock recovery cannot delete a live owner's lock.
+            return ctypes.get_last_error() != error_invalid_parameter
+        try:
+            result = kernel32.WaitForSingleObject(handle, 0)
+            if result == wait_object_0:
+                return False
+            if result == wait_timeout:
+                return True
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as error:
+        return error.errno not in {errno.ESRCH, errno.EINVAL}
+    return True
+
+
+_IN_PROCESS_LOCKS: dict[str, threading.RLock] = {}
+_IN_PROCESS_LOCKS_GUARD = threading.Lock()
+
+
+def _in_process_lock(path: Path) -> threading.RLock:
+    key = os.path.normcase(str(path.resolve(strict=False)))
+    with _IN_PROCESS_LOCKS_GUARD:
+        return _IN_PROCESS_LOCKS.setdefault(key, threading.RLock())
+
+
+def _unlink_lock_if_owned(
+    lock: Path, expected_token: Any, *, attempts: int = 6
+) -> bool:
+    """Remove only the lock generation observed by the caller.
+
+    Windows can transiently reject unlink while another handle is closing.  The
+    owner token is re-read before every retry so a replacement lock is never
+    removed by an earlier owner.
+    """
+    for attempt in range(attempts):
+        current = _read_json(lock, {})
+        current_token = current.get("token") if isinstance(current, dict) else None
+        if current_token != expected_token:
+            return False
+        try:
+            lock.unlink()
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as error:
+            if getattr(error, "winerror", None) != 32 or attempt + 1 >= attempts:
+                raise
+            time.sleep(min(0.01 * (2**attempt), 0.16))
+    return False
+
+
 @contextlib.contextmanager
-def _file_lock(path: Path, timeout_seconds: float = 3.0) -> Iterator[None]:
+def _file_lock(
+    path: Path, timeout_seconds: float = 3.0, stale_seconds: float = 30.0
+) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = path.with_name(path.name + ".lock")
-    deadline = time.monotonic() + timeout_seconds
-    descriptor = None
-    while descriptor is None:
+    with _in_process_lock(lock):
+        deadline = time.monotonic() + timeout_seconds
+        owner = {
+            "pid": os.getpid(),
+            "token": str(uuid.uuid4()),
+            "created": time.time(),
+        }
+        descriptor = None
+        while descriptor is None:
+            try:
+                descriptor = os.open(
+                    str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                )
+                os.write(descriptor, json.dumps(owner).encode("ascii"))
+                os.fsync(descriptor)
+            except FileExistsError:
+                existing = _read_json(lock, {})
+                pid = existing.get("pid") if isinstance(existing, dict) else None
+                token = existing.get("token") if isinstance(existing, dict) else None
+                created = (
+                    existing.get("created") if isinstance(existing, dict) else None
+                )
+                if isinstance(created, (int, float)):
+                    age = time.time() - float(created)
+                else:
+                    with contextlib.suppress(OSError):
+                        created = lock.stat().st_mtime
+                    age = (
+                        time.time() - float(created)
+                        if isinstance(created, (int, float))
+                        else None
+                    )
+                stale = (
+                    isinstance(pid, int)
+                    and not _process_alive(pid)
+                    or (pid is None and age is not None and age >= stale_seconds)
+                )
+                if stale:
+                    _unlink_lock_if_owned(lock, token)
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"router storage is busy: {path.name}")
+                time.sleep(0.02)
+            except BaseException:
+                if descriptor is not None:
+                    os.close(descriptor)
+                    descriptor = None
+                    with contextlib.suppress(OSError):
+                        _unlink_lock_if_owned(lock, owner["token"])
+                raise
         try:
-            descriptor = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"router storage is busy: {path.name}")
-            time.sleep(0.02)
-    try:
-        yield
-    finally:
-        os.close(descriptor)
-        with contextlib.suppress(FileNotFoundError):
-            lock.unlink()
+            yield
+        finally:
+            os.close(descriptor)
+            _unlink_lock_if_owned(lock, owner["token"])
 
 
 def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
+    temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
 
 
 def _append_unlocked(path: Path, value: dict[str, Any]) -> None:
@@ -209,6 +518,10 @@ def shadows_path(root: Path | None = None) -> Path:
     return (root or plugin_data_root()) / "learning" / "shadows.json"
 
 
+def state_lock_path(root: Path | None = None) -> Path:
+    return (root or plugin_data_root()) / "state" / "router-state"
+
+
 def load_policy(root: Path | None = None) -> dict[str, Any]:
     value = _read_json(policy_path(root), None)
     if not isinstance(value, dict):
@@ -231,7 +544,8 @@ def load_policy(root: Path | None = None) -> dict[str, Any]:
 def save_policy(policy: dict[str, Any], root: Path | None = None) -> None:
     policy["schema_version"] = 2
     policy["updated_at"] = utc_now()
-    _atomic_write_json(policy_path(root), policy)
+    with _file_lock(state_lock_path(root)):
+        _atomic_write_json(policy_path(root), policy)
 
 
 def _salt(root: Path | None = None) -> bytes:
@@ -275,7 +589,8 @@ def load_shadows(root: Path | None = None) -> dict[str, Any]:
 
 def save_shadows(value: dict[str, Any], root: Path | None = None) -> None:
     value["schema_version"] = 2
-    _atomic_write_json(shadows_path(root), value)
+    with _file_lock(state_lock_path(root)):
+        _atomic_write_json(shadows_path(root), value)
 
 
 def _normalise(text: str) -> str:
@@ -491,7 +806,7 @@ def infer_decision_features(
         if not 0 <= float(features["confidence"]) <= 1:
             raise ValueError("feature confidence must be between 0 and 1")
         features["feature_source"] = "caller_supplied"
-    return features
+    return validate_decision_features(features)
 
 
 ROLE_BY_COGNITIVE = {
@@ -571,6 +886,40 @@ def _shadow_recommendation(
     return None
 
 
+def _role_config(profile: dict[str, Any], role: str) -> dict[str, Any]:
+    config = profile["roles"].get(role)
+    if not isinstance(config, dict):
+        raise TypeError(f"profile has no role named {role}")
+    return config
+
+
+def _validate_route_tuple(
+    profile: dict[str, Any], role: str, model: str, effort: str, *, explicit_effort: bool = False
+) -> dict[str, Any]:
+    config = _role_config(profile, role)
+    allowed_models = list(
+        config.get("allowed_models") or [config.get("default_model") or config.get("model")]
+    )
+    if model not in VALID_MODELS or model not in allowed_models:
+        raise ValueError(f"model {model} is not allowed for role {role}")
+    if effort not in VALID_EFFORTS:
+        raise ValueError("unsupported reasoning effort")
+    effort_config = config.get("effort")
+    if isinstance(effort_config, dict):
+        order = ["low", "medium", "high", "xhigh", "max", "ultra"]
+        minimum = str(effort_config.get("min"))
+        maximum = str(effort_config.get("max"))
+        explicit_extended_effort = explicit_effort and effort in {"max", "ultra"}
+        if minimum not in order or maximum not in order or (
+            not explicit_extended_effort
+            and not order.index(minimum) <= order.index(effort) <= order.index(maximum)
+        ):
+            raise ValueError(f"effort {effort} is outside role {role} bounds")
+    if effort in {"max", "ultra"} and not explicit_effort:
+        raise ValueError("Max/Ultra require an explicit user constraint")
+    return config
+
+
 def make_route_plan(
     task: str,
     *,
@@ -594,45 +943,39 @@ def make_route_plan(
     if task_class == "implementation" and features["spec_state"] != "frozen":
         task_class = "research"
     role = force_role or ROLE_BY_COGNITIVE.get(task_class, "direct")
-    constraints = dict(constraints or {})
+    constraints = validate_constraints(constraints)
     loaded = load_profile(selected)
-    if set(constraints) - {"role", "model", "reasoning_effort", "no_delegation"}:
-        raise ValueError("constraints may contain only structured routing fields")
+    override = _active_overrides(load_policy(root), selected, task_class)
+    if not force_role and "role" not in constraints and not constraints.get("no_delegation"):
+        role = override.get("role", role)
     if constraints.get("no_delegation"):
         role = "direct"
-    if constraints.get("role"):
+    elif constraints.get("role"):
         role = str(constraints["role"])
-    config = loaded["roles"].get(role)
-    if not isinstance(config, dict):
-        raise TypeError(f"profile {selected} has no role named {role}")
-    allowed = list(
-        config.get("allowed_models")
-        or [config.get("default_model") or config.get("model")]
-    )
-    model = str(
-        constraints.get("model") or config.get("default_model") or config.get("model")
-    )
+    config = _role_config(loaded, role)
+    model = str(config.get("default_model") or config.get("model"))
     effort_config = config.get("effort")
     effort = str(
-        constraints.get("reasoning_effort")
-        or config.get("effort_default")
+        config.get("effort_default")
         or (
             effort_config
             if isinstance(effort_config, str)
             else effort_config.get("default")
         )
     )
-    if model not in VALID_MODELS or model not in allowed:
-        raise ValueError("model is not allowed for selected role")
-    if effort not in VALID_EFFORTS:
-        raise ValueError("unsupported reasoning effort")
-    if effort in {"max", "ultra"} and not constraints.get("reasoning_effort"):
-        raise ValueError("Max/Ultra require an explicit user constraint")
-    if not constraints:
-        override = _active_overrides(load_policy(root), selected, task_class)
-        role = override.get("role", role)
+    if "model" not in constraints:
         model = override.get("model", model)
+    if "reasoning_effort" not in constraints:
         effort = override.get("reasoning_effort", effort)
+    model = str(constraints.get("model", model))
+    effort = str(constraints.get("reasoning_effort", effort))
+    config = _validate_route_tuple(
+        loaded,
+        role,
+        model,
+        effort,
+        explicit_effort="reasoning_effort" in constraints,
+    )
     if role in {
         "router_research_engineer",
         "router_code_mapper",
@@ -761,6 +1104,7 @@ class RouterEngine:
             ledger["dedupe"][dedupe_key] = value["event_id"]
         if dedupe_key:
             value["dedupe_key"] = dedupe_key
+        validate_evidence_event(value)
         _append_unlocked(events_path(self.root), value)
         return value
 
@@ -877,6 +1221,7 @@ class RouterEngine:
                 "user_confirmed": True,
                 "objective_verification": False,
                 "replacement": None,
+                "high_risk_regression": False,
                 "retry_band": "unknown",
                 "rework_band": "medium",
                 "tool_band": "unknown",
@@ -889,7 +1234,7 @@ class RouterEngine:
 
     def plan_route(
         self,
-        task: str,
+        task: str | None = None,
         *,
         task_ref: str | None = None,
         session_id: str | None = None,
@@ -905,6 +1250,10 @@ class RouterEngine:
             ledger = self._ledger()
             if task_ref and task_ref in ledger["tasks"]:
                 return dict(ledger["tasks"][task_ref]["route"])
+            if task is None or not task.strip():
+                if task_ref:
+                    raise ValueError("unknown task_ref; task is required to create a new route")
+                raise ValueError("task is required when task_ref is omitted")
             plan = make_route_plan(
                 task,
                 profile=profile,
@@ -1258,31 +1607,36 @@ class RouterEngine:
     def _record_shadow_result(
         self, proposal_id: str, result: str, project: str | None
     ) -> None:
-        shadows = load_shadows(self.root)
-        item = shadows["items"].get(proposal_id)
-        if not isinstance(item, dict) or item.get("state") != "active":
-            return
-        item.setdefault("observations", []).append(
-            {"result": result, "project": project, "created_at": utc_now()}
-        )
-        comparable = [x for x in item["observations"] if x["result"] != "inconclusive"]
-        support = sum(x["result"] == "candidate_win" for x in comparable)
-        losses = sum(x["result"] == "incumbent_win" for x in comparable)
-        projects = {x.get("project") for x in comparable}
-        learning = load_policy(self.root)["learning"]
-        if (
-            len(comparable) >= learning["shadow_minimum_comparable"]
-            and support >= learning["shadow_minimum_support"]
-            and losses <= learning["shadow_maximum_losses"]
-            and not item.get("high_risk_regression")
-            and (
-                item["proposal"].get("scope") != "global"
-                or len(projects) >= learning["minimum_distinct_projects_for_global"]
+        with _file_lock(state_lock_path(self.root)):
+            shadows = load_shadows(self.root)
+            item = shadows["items"].get(proposal_id)
+            if not isinstance(item, dict) or item.get("state") != "active":
+                return
+            item.setdefault("observations", []).append(
+                {"result": result, "project": project, "created_at": utc_now(), "source": "task_outcome"}
             )
-        ):
-            item["state"] = "validated"
-            item["validated_at"] = utc_now()
-        save_shadows(shadows, self.root)
+            comparable = [
+                x
+                for x in item["observations"]
+                if x["result"] != "inconclusive" and x.get("source") == "task_outcome"
+            ]
+            support = sum(x["result"] == "candidate_win" for x in comparable)
+            losses = sum(x["result"] == "incumbent_win" for x in comparable)
+            projects = {x.get("project") for x in comparable if x.get("project")}
+            learning = load_policy(self.root)["learning"]
+            if (
+                len(comparable) >= learning["shadow_minimum_comparable"]
+                and support >= learning["shadow_minimum_support"]
+                and losses <= learning["shadow_maximum_losses"]
+                and not item.get("high_risk_regression")
+                and (
+                    item["proposal"].get("scope") != "global"
+                    or len(projects) >= learning["minimum_distinct_projects_for_global"]
+                )
+            ):
+                item["state"] = "validated"
+                item["validated_at"] = utc_now()
+            _atomic_write_json(shadows_path(self.root), shadows)
 
     def evaluate_policy(self) -> list[dict[str, Any]]:
         return learning_proposals(self.root)
@@ -1425,6 +1779,26 @@ def learning_proposals(root: Path | None = None) -> list[dict[str, Any]]:
             before, after = str(route.get(axis)), str(replacement.get(axis))
             if before == after:
                 continue
+            profile_config = load_profile(str(route.get("profile")))
+            try:
+                if axis == "role":
+                    _role_config(profile_config, after)
+                elif axis == "model":
+                    _validate_route_tuple(
+                        profile_config,
+                        str(route.get("role")),
+                        after,
+                        str(route.get("reasoning_effort")),
+                    )
+                else:
+                    _validate_route_tuple(
+                        profile_config,
+                        str(route.get("role")),
+                        str(route.get("model")),
+                        after,
+                    )
+            except ValueError:
+                continue
             key = "|".join(
                 [
                     str(route.get("profile")),
@@ -1499,46 +1873,39 @@ def start_shadow(proposal_id: str, root: Path | None = None) -> dict[str, Any]:
     proposal = _proposal_by_id(proposal_id, root)
     if proposal["status"] != "ready_for_shadow":
         raise ValueError("proposal must be ready_for_shadow")
-    shadows = load_shadows(root)
-    shadows["items"][proposal_id] = {
-        "state": "active",
-        "started_at": utc_now(),
-        "proposal": proposal,
-        "observations": [],
-        "high_risk_regression": False,
-    }
-    save_shadows(shadows, root)
-    return shadows["items"][proposal_id]
+    with _file_lock(state_lock_path(root)):
+        shadows = load_shadows(root)
+        shadows["items"][proposal_id] = {
+            "state": "active",
+            "started_at": utc_now(),
+            "proposal": proposal,
+            "observations": [],
+            "high_risk_regression": False,
+        }
+        _atomic_write_json(shadows_path(root), shadows)
+        return dict(shadows["items"][proposal_id])
 
 
 def record_shadow_observation(
     proposal_id: str, success: bool, root: Path | None = None
 ) -> dict[str, Any]:
-    shadows = load_shadows(root)
-    item = shadows["items"].get(proposal_id)
-    if not isinstance(item, dict) or item.get("state") != "active":
-        raise ValueError("proposal is not active")
-    item.setdefault("observations", []).append(
-        {
-            "result": "candidate_win" if success else "incumbent_win",
-            "project": "manual",
-            "created_at": utc_now(),
-            "source": "manual",
-        }
-    )
-    support = sum(x["result"] == "candidate_win" for x in item["observations"])
-    losses = sum(x["result"] == "incumbent_win" for x in item["observations"])
-    learning = load_policy(root)["learning"]
-    if (
-        len(item["observations"]) >= learning["shadow_minimum_comparable"]
-        and support >= learning["shadow_minimum_support"]
-        and losses <= learning["shadow_maximum_losses"]
-        and item["proposal"].get("scope") != "global"
-    ):
-        item["state"] = "validated"
-        item["validated_at"] = utc_now()
-    save_shadows(shadows, root)
-    return item
+    if type(success) is not bool:
+        raise ValueError("success must be boolean")
+    with _file_lock(state_lock_path(root)):
+        shadows = load_shadows(root)
+        item = shadows["items"].get(proposal_id)
+        if not isinstance(item, dict) or item.get("state") != "active":
+            raise ValueError("proposal is not active")
+        item.setdefault("observations", []).append(
+            {
+                "result": "inconclusive",
+                "project": None,
+                "created_at": utc_now(),
+                "source": "legacy_manual_boolean",
+            }
+        )
+        _atomic_write_json(shadows_path(root), shadows)
+        return dict(item)
 
 
 def confirm_policy_change(
@@ -1547,35 +1914,38 @@ def confirm_policy_change(
     if not confirmed_by_user:
         raise ValueError("policy changes require explicit user confirmation")
     proposal = _proposal_by_id(proposal_id, root)
-    shadows = load_shadows(root)
-    shadow = shadows["items"].get(proposal_id)
-    if proposal["status"] != "ready_for_confirmation" or not isinstance(shadow, dict):
-        raise ValueError("proposal requires successful shadow validation")
-    policy = load_policy(root)
-    override = {
-        "proposal_id": proposal_id,
-        "profile": proposal["profile"],
-        "task_class": proposal["task_class"],
-        "axis": proposal["axis"],
-        "to": proposal["to"],
-        "scope": proposal["scope"],
-        "confirmed_at": utc_now(),
-    }
-    policy["overrides"] = [
-        x
-        for x in policy["overrides"]
-        if not (
-            x.get("profile") == override["profile"]
-            and x.get("task_class") == override["task_class"]
-            and x.get("axis") == override["axis"]
-        )
-    ] + [override]
-    policy["revision"] = int(policy.get("revision") or 1) + 1
-    save_policy(policy, root)
-    shadow["state"] = "confirmed"
-    shadow["confirmed_at"] = utc_now()
-    save_shadows(shadows, root)
-    return override
+    with _file_lock(state_lock_path(root)):
+        shadows = load_shadows(root)
+        shadow = shadows["items"].get(proposal_id)
+        if proposal["status"] != "ready_for_confirmation" or not isinstance(shadow, dict):
+            raise ValueError("proposal requires successful shadow validation")
+        policy = load_policy(root)
+        override = {
+            "proposal_id": proposal_id,
+            "profile": proposal["profile"],
+            "task_class": proposal["task_class"],
+            "axis": proposal["axis"],
+            "to": proposal["to"],
+            "scope": proposal["scope"],
+            "confirmed_at": utc_now(),
+        }
+        policy["overrides"] = [
+            x
+            for x in policy["overrides"]
+            if not (
+                x.get("profile") == override["profile"]
+                and x.get("task_class") == override["task_class"]
+                and x.get("axis") == override["axis"]
+            )
+        ] + [override]
+        policy["revision"] = int(policy.get("revision") or 1) + 1
+        policy["schema_version"] = 2
+        policy["updated_at"] = utc_now()
+        _atomic_write_json(policy_path(root), policy)
+        shadow["state"] = "confirmed"
+        shadow["confirmed_at"] = utc_now()
+        _atomic_write_json(shadows_path(root), shadows)
+        return override
 
 
 def _wilson(successes: int, total: int) -> dict[str, float | None]:

@@ -29,18 +29,32 @@ def validate(root: Path, base_ref: str | None = None) -> None:
     schema = json.loads(
         (target / "schemas" / "event-v2.schema.json").read_text(encoding="utf-8")
     )
-    if schema.get("properties", {}).get("schema_version", {}).get("const") != 2:
+    if schema.get("properties", {}).get("schema_version", {}).get("const") != 2 or schema.get("additionalProperties") is not False:
         fail("event v2 schema is invalid")
     ids = set()
-    previous = None
     events = []
     manifest_paths = (
         list((target / "manifests").glob("manifest-*.json"))
         if (target / "manifests").exists()
         else []
     )
-    manifest_paths.sort(key=lambda path: int(path.stem.split("-")[1]))
-    for manifest_path in manifest_paths if (target / "manifests").exists() else []:
+    manifests_by_hash = {
+        hashlib.sha256(path.read_bytes()).hexdigest(): path for path in manifest_paths
+    }
+    latest = json.loads((target / "latest.json").read_text()) if (target / "latest.json").exists() else {}
+    cursor = latest.get("manifest_sha256")
+    ordered = []
+    seen_hashes = set()
+    while cursor:
+        if cursor in seen_hashes or cursor not in manifests_by_hash:
+            fail("manifest hash chain is broken or cyclic")
+        seen_hashes.add(cursor)
+        path = manifests_by_hash[cursor]
+        ordered.append(path)
+        cursor = json.loads(path.read_text()).get("previous_manifest_sha256")
+    if len(ordered) != len(manifest_paths):
+        fail("unreachable manifest in immutable history")
+    for manifest_path in reversed(ordered):
         manifest = json.loads(manifest_path.read_text())
         batch = target / "batches" / manifest["batch"]
         if manifest.get("schema_version") != 2 or manifest.get("count") != len(
@@ -49,17 +63,12 @@ def validate(root: Path, base_ref: str | None = None) -> None:
             fail("manifest schema/count mismatch")
         if manifest.get("sha256") != hashlib.sha256(batch.read_bytes()).hexdigest():
             fail("batch hash mismatch")
-        if manifest.get("previous_manifest_sha256") != previous:
-            fail("manifest hash chain mismatch")
-        previous = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
         for event in sync_evolution_data.read_jsonl(batch):
             events.append(event)
-            if (
-                event.get("schema_version") != 2
-                or not event.get("event_id")
-                or not isinstance(event.get("sequence"), int)
-            ):
-                fail("invalid event v2")
+            try:
+                router_core.validate_evidence_event(event)
+            except ValueError as error:
+                fail(f"invalid event v2: {error}")
             if event["event_id"] in ids:
                 fail("duplicate event id")
             ids.add(event["event_id"])

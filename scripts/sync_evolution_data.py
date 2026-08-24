@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,112 @@ SECRET_PATTERN = re.compile(
 
 class SyncError(RuntimeError):
     pass
+
+
+MIGRATION_NAMESPACE = uuid.UUID("f77bf564-810a-4ea8-a6f9-0be79dfda401")
+
+
+def _legacy_uuid(kind: str, value: Any) -> str:
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return str(uuid.uuid5(MIGRATION_NAMESPACE, f"{kind}:{canonical}"))
+
+
+def _legacy_identity(kind: str, value: Any) -> str:
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"legacy-v1:{kind}:{canonical}".encode()).hexdigest()[:32]
+
+
+def _legacy_sequence(record: dict[str, Any]) -> int:
+    value = record.get("sequence")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return int(hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()[:8], 16) + 1
+
+
+def _legacy_route_tuple(record: dict[str, Any]) -> tuple[str, str, str]:
+    role = record.get("role") if record.get("role") in router_core.VALID_ROLES else "direct"
+    profile = record.get("profile") if record.get("profile") in {"generic", "quant"} else "generic"
+    config = router_core.load_profile(profile)["roles"][role]
+    model = record.get("model") if record.get("model") in config["allowed_models"] else config["default_model"]
+    effort = record.get("reasoning_effort")
+    order = ["low", "medium", "high", "xhigh", "max", "ultra"]
+    limits = config["effort"]
+    allowed_efforts = order[order.index(limits["min"]) : order.index(limits["max"]) + 1]
+    if effort not in allowed_efforts or effort in {"max", "ultra"}:
+        effort = config["effort"]["default"]
+    return role, model, effort
+
+
+def migrate_event(record: dict[str, Any]) -> dict[str, Any]:
+    """Return a strict, deterministic v2 upload record without mutating v1 input."""
+    if record.get("schema_version") == 2:
+        value = json.loads(json.dumps(record))
+        try:
+            router_core.validate_evidence_event(value)
+        except ValueError as error:
+            raise SyncError(f"invalid v2 evidence: {error}") from error
+        assert_safe(value)
+        return value
+    if record.get("schema_version") not in {None, 1}:
+        raise SyncError("unsupported evidence schema version")
+    kind = record.get("type") if record.get("type") in {"route", "execution", "outcome"} else "execution"
+    event_id = _legacy_uuid("event", record)
+    route_id = str(record.get("route_id") or "")
+    try:
+        route_id = str(uuid.UUID(route_id))
+    except ValueError:
+        route_id = _legacy_uuid("route", record.get("route_id") or record)
+    task_ref = _legacy_identity("task", record.get("task_ref") or route_id)
+    base = {
+        "schema_version": 2,
+        "event_id": event_id,
+        "sequence": _legacy_sequence(record),
+        "created_at": record.get("created_at") if isinstance(record.get("created_at"), str) and len(record["created_at"]) <= 40 else "1970-01-01T00:00:00Z",
+        "type": kind,
+        "task_ref": task_ref,
+        "route_id": route_id,
+    }
+    role, model, effort = _legacy_route_tuple(record)
+    if kind == "route":
+        task_class = record.get("task_class") if record.get("task_class") in router_core.FEATURE_VALUES["cognitive_type"] else "direct"
+        value = {
+            **base,
+            "task_fingerprint": _legacy_identity("fingerprint", record.get("task_fingerprint") or task_ref),
+            "profile": record.get("profile") if record.get("profile") in {"generic", "quant"} else "generic",
+            "task_class": task_class,
+            "role": role,
+            "model": model,
+            "reasoning_effort": effort,
+            "confidence": float(record.get("confidence")) if isinstance(record.get("confidence"), (int, float)) and not isinstance(record.get("confidence"), bool) and 0 <= record["confidence"] <= 1 else 0.5,
+            "decision_features": {
+                "operation_mode": "answer", "scope": "bounded", "spec_state": "unknown",
+                "reversibility": "reversible", "cognitive_type": task_class, "risk_domains": [],
+                "workload": "medium", "user_constraints": [], "feature_source": "legacy_v1", "confidence": 0.5,
+            },
+            "constraints": {}, "policy_revision": 1, "shadow": None,
+            "session": _legacy_identity("session", record.get("session") or event_id),
+            "project": _legacy_identity("project", record.get("project") or "unknown"),
+        }
+    elif kind == "outcome":
+        verified = record.get("verified") is True or record.get("quality_gate") == "passed"
+        status = record.get("status") if record.get("status") in router_core.OUTCOME_STATUSES else ("verified" if verified else "completed")
+        value = {
+            **base, "status": status, "quality_gate": "passed" if verified else "provisional",
+            "route_fit": record.get("route_fit") if record.get("route_fit") in router_core.ROUTE_FITS else "unknown",
+            "verification_kinds": [], "confidence": 0.5, "evidence_source": "legacy_v1",
+            "objective_verification": False, "user_confirmed": False, "replacement": None,
+            "high_risk_regression": False, "retry_band": "unknown", "rework_band": "unknown",
+            "tool_band": "unknown", "duration_band": "unknown", "token_band": "unknown", "cost_band": "unknown",
+        }
+    else:
+        event = record.get("event") if record.get("event") in router_core.HOOK_EVENTS else "PostToolUse"
+        value = {**base, "event": event, "tool_kind": "lifecycle" if event in {"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"} else "local", "failed": bool(record.get("failed") is True)}
+    try:
+        router_core.validate_evidence_event(value)
+    except ValueError as error:
+        raise SyncError(f"v1 migration produced invalid evidence: {error}") from error
+    assert_safe(value)
+    return value
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
@@ -134,13 +241,9 @@ def ensure_clean_clone(repository: Path) -> None:
 def merged_records(*roots: Path) -> list[dict[str, Any]]:
     by_id = {}
     for root in roots:
-        for record in read_jsonl(root / "events" / "routing.jsonl"):
-            event_id = str(
-                record.get("event_id")
-                or hashlib.sha256(
-                    json.dumps(record, sort_keys=True).encode()
-                ).hexdigest()
-            )
+        for raw_record in read_jsonl(root / "events" / "routing.jsonl"):
+            record = migrate_event(raw_record)
+            event_id = str(record["event_id"])
             if event_id in by_id and by_id[event_id] != record:
                 raise SyncError(
                     f"duplicate event id with different payload: {event_id}"
@@ -192,16 +295,13 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
         previous = read_json(latest, {}).get("manifest_sha256")
     manifest_name = None
     if fresh:
-        first = str(fresh[0].get("sequence") or 0)
-        last = str(fresh[-1].get("sequence") or 0)
-        batch_name = f"batch-{first}-{last}.jsonl"
-        batch_path = target / "batches" / batch_name
-        _write_new(
-            batch_path,
-            "".join(
-                json.dumps(x, ensure_ascii=False, sort_keys=True) + "\n" for x in fresh
-            ),
+        rendered_batch = "".join(
+            json.dumps(x, ensure_ascii=False, sort_keys=True) + "\n" for x in fresh
         )
+        batch_id = hashlib.sha256(rendered_batch.encode("utf-8")).hexdigest()
+        batch_name = f"batch-{batch_id}.jsonl"
+        batch_path = target / "batches" / batch_name
+        _write_new(batch_path, rendered_batch)
         manifest = {
             "schema_version": 2,
             "batch": batch_name,
@@ -213,7 +313,7 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
             .isoformat()
             .replace("+00:00", "Z"),
         }
-        manifest_name = f"manifest-{first}-{last}.json"
+        manifest_name = f"manifest-{batch_id}.json"
         manifest_path = target / "manifests" / manifest_name
         _write_new(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
         previous = sha256(manifest_path)

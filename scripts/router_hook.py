@@ -21,7 +21,7 @@ def main() -> int:
     try:
         payload: dict[str, Any] = json.load(sys.stdin)
         if not isinstance(payload, dict):
-            raise ValueError("hook input must be a JSON object")
+            raise TypeError("hook input must be a JSON object")
         router_core.record_hook_event(event, payload)
         output = router_core.hook_context(event, payload)
         if output is not None:
@@ -29,7 +29,7 @@ def main() -> int:
         else:
             sys.stdout.write(json.dumps({"continue": True}))
         return 0
-    except (OSError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+    except (OSError, TimeoutError, TypeError, ValueError, json.JSONDecodeError) as error:
         # Hooks must fail open: routing evidence may never interrupt ordinary work.
         sys.stdout.write(json.dumps({"continue": True, "systemMessage": f"Adaptive Router hook skipped: {error}"}))
         return 0

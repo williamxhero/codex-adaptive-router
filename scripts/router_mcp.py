@@ -22,18 +22,27 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "task": {"type": "string"},
-                "task_ref": {"type": "string"},
+                "task": {"type": "string", "minLength": 1},
+                "task_ref": {"type": "string", "pattern": "^[0-9a-f]{24,64}$"},
                 "profile": {"type": "string", "enum": ["generic", "quant"]},
                 "task_state": {"type": "string", "enum": ["unknown", "frozen"]},
-                "force_role": {"type": "string"},
+                "force_role": {"type": "string", "enum": sorted(router_core.VALID_ROLES)},
                 "session_id": {"type": "string"},
                 "project_fingerprint": {"type": "string"},
                 "decision_features": {"type": "object"},
-                "constraints": {"type": "object"},
+                "constraints": {
+                    "type": "object",
+                    "properties": {
+                        "role": {"type": "string", "enum": sorted(router_core.VALID_ROLES)},
+                        "model": {"type": "string", "enum": MODELS},
+                        "reasoning_effort": {"type": "string", "enum": EFFORTS},
+                        "no_delegation": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
                 "record": {"type": "boolean", "default": True},
             },
-            "required": ["task"],
+            "anyOf": [{"required": ["task"]}, {"required": ["task_ref"]}],
             "additionalProperties": False,
         },
     },
@@ -149,7 +158,7 @@ def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
 def _tool_call(name: str, a: dict[str, Any]) -> Any:
     if name == "route_plan":
         return router_core.RouterEngine().plan_route(
-            str(a["task"]),
+            a.get("task"),
             task_ref=a.get("task_ref"),
             session_id=a.get("session_id"),
             project_fingerprint=a.get("project_fingerprint"),

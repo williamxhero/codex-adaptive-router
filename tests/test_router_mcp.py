@@ -7,10 +7,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SERVER = PLUGIN_ROOT / "scripts" / "router_mcp.py"
 WINDOWS_HOOK = PLUGIN_ROOT / "scripts" / "router-hook.cmd"
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+import router_mcp
 
 
 class RouterMcpTests(unittest.TestCase):
@@ -87,6 +90,20 @@ class RouterMcpTests(unittest.TestCase):
             "decision_features", tools["route_plan"]["inputSchema"]["properties"]
         )
         self.assertIn("router_metrics", tools)
+
+    def test_route_plan_accepts_only_known_task_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            os.environ, {"CODEX_ADAPTIVE_ROUTER_DATA": directory}
+        ):
+            first = router_mcp._tool_call(
+                "route_plan", {"task": "Search code", "session_id": "s"}
+            )
+            confirmed = router_mcp._tool_call(
+                "route_plan", {"task_ref": first["task_ref"]}
+            )
+            self.assertEqual(confirmed["route_id"], first["route_id"])
+            with self.assertRaisesRegex(ValueError, "unknown task_ref"):
+                router_mcp._tool_call("route_plan", {"task_ref": "a" * 32})
 
     @unittest.skipUnless(os.name == "nt", "Windows hook wrapper is platform-specific")
     def test_windows_hook_wrapper_returns_preflight_context(self) -> None:

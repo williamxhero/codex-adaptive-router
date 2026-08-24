@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = PLUGIN_ROOT / "scripts" / "install_user_layer.py"
 UNINSTALLER = PLUGIN_ROOT / "scripts" / "uninstall_user_layer.py"

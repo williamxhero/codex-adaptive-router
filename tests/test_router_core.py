@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -47,9 +50,42 @@ class RouterPlanTests(unittest.TestCase):
             constraints={},
         )
         self.assertNotIn(automatic.reasoning_effort, {"max", "ultra"})
+        with self.assertRaises(ValueError):
+            router_core.make_route_plan(
+                "small answer", constraints={"no_delegation": "false"}
+            )
+
+    def test_role_policy_override_reloads_legal_role_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            policy = router_core.default_policy()
+            policy["overrides"] = [
+                {
+                    "profile": "generic",
+                    "task_class": "discovery",
+                    "axis": "role",
+                    "to": "router_researcher",
+                }
+            ]
+            router_core.save_policy(policy, root)
+            plan = router_core.make_route_plan("Search code for references", root=root)
+            self.assertEqual(
+                (plan.role, plan.model, plan.reasoning_effort),
+                ("router_researcher", "gpt-5.6-sol", "high"),
+            )
 
 
 class EngineTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Win32 process query is Windows-specific")
+    def test_windows_process_alive_never_uses_os_kill(self):
+        with mock.patch.object(
+            router_core.os,
+            "kill",
+            side_effect=AssertionError("Windows process query called os.kill"),
+        ):
+            self.assertTrue(router_core._process_alive(os.getpid()))
+            self.assertFalse(router_core._process_alive(0x7FFFFFFF))
+
     def test_task_correlation_idempotency_and_sequence(self):
         with tempfile.TemporaryDirectory() as d:
             engine = router_core.RouterEngine(Path(d))
@@ -82,6 +118,39 @@ class EngineTests(unittest.TestCase):
             )
             self.assertEqual(route["route_id"], task["route_id"])
             self.assertEqual(route["role"], "router_code_mapper")
+
+    def test_task_ref_only_is_idempotent_and_unknown_ref_is_clear(self):
+        with tempfile.TemporaryDirectory() as d:
+            engine = router_core.RouterEngine(Path(d))
+            task = engine.begin_task(session_id="s", turn_id="t", prompt="Search code")
+            route = engine.plan_route(task_ref=task["task_ref"])
+            self.assertEqual(route["route_id"], task["route_id"])
+            self.assertEqual(len(router_core._all_events(Path(d))), 1)
+            with self.assertRaisesRegex(ValueError, "unknown task_ref"):
+                engine.plan_route(task_ref="a" * 32)
+
+    def test_stale_lock_recovers_without_removing_live_owner(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "state"
+            lock = target.with_name(target.name + ".lock")
+            lock.parent.mkdir(parents=True, exist_ok=True)
+            lock.write_text(
+                json.dumps({"pid": 99999999, "token": "stale", "created": 0})
+            )
+            with router_core._file_lock(target, timeout_seconds=0.3, stale_seconds=0):
+                self.assertTrue(lock.exists())
+            self.assertFalse(lock.exists())
+            lock.write_text(
+                json.dumps(
+                    {"pid": os.getpid(), "token": "live", "created": time.time() - 60}
+                )
+            )
+            with self.assertRaises(TimeoutError), router_core._file_lock(
+                target, timeout_seconds=0.05, stale_seconds=0
+            ):
+                pass
+            self.assertEqual(json.loads(lock.read_text())["token"], "live")
+            lock.unlink()
 
     def test_tool_aggregation_dedupe_and_transition(self):
         with tempfile.TemporaryDirectory() as d:
@@ -236,23 +305,86 @@ class IntelligenceTests(unittest.TestCase):
             root = Path(d)
             self._evidence(root)
             proposals = router_core.learning_proposals(root)
-            self.assertEqual({x["axis"] for x in proposals}, {"role", "model"})
+            self.assertEqual({x["axis"] for x in proposals}, {"role"})
             self.assertTrue(all(x["status"] == "ready_for_shadow" for x in proposals))
             metrics = router_core.router_metrics(root)
             self.assertEqual(metrics["route_success"], 1.0)
             self.assertIsNotNone(metrics["route_success_wilson_95"]["low"])
-            proposal = next(x for x in proposals if x["axis"] == "model")
+            proposal = proposals[0]
             router_core.start_shadow(proposal["proposal_id"], root)
-            for _ in range(10):
-                router_core.record_shadow_observation(
-                    proposal["proposal_id"], True, root
+            engine = router_core.RouterEngine(root)
+            for i in range(10):
+                task = engine.begin_task(
+                    session_id=f"shadow-{i}",
+                    turn_id="1",
+                    prompt="Implement from frozen spec",
+                    project="p",
+                    decision_features={
+                        "cognitive_type": "implementation",
+                        "spec_state": "frozen",
+                        "confidence": 0.9,
+                    },
+                )
+                engine.finalize_task(
+                    task["task_ref"],
+                    status="escalated",
+                    quality_gate="passed",
+                    route_fit="under_routed",
+                    confidence=0.9,
+                    verified=True,
+                    objective_verification=True,
+                    user_confirmed=True,
+                    replacement_role="router_researcher",
+                    replacement_model="gpt-5.6-sol",
+                    replacement_effort="high",
                 )
             with self.assertRaises(ValueError):
                 router_core.confirm_policy_change(proposal["proposal_id"], False, root)
             override = router_core.confirm_policy_change(
                 proposal["proposal_id"], True, root
             )
-            self.assertEqual(override["axis"], "model")
+            self.assertEqual(override["axis"], "role")
+
+    def test_legacy_manual_shadow_observations_never_make_proposal_ready(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._evidence(root)
+            proposal = router_core.learning_proposals(root)[0]
+            router_core.start_shadow(proposal["proposal_id"], root)
+            for _ in range(12):
+                router_core.record_shadow_observation(proposal["proposal_id"], True, root)
+            item = router_core.load_shadows(root)["items"][proposal["proposal_id"]]
+            self.assertEqual(item["state"], "active")
+            self.assertTrue(
+                all(x["result"] == "inconclusive" for x in item["observations"])
+            )
+            self.assertEqual(
+                next(
+                    x
+                    for x in router_core.learning_proposals(root)
+                    if x["proposal_id"] == proposal["proposal_id"]
+                )["status"],
+                "shadow_running",
+            )
+
+    def test_concurrent_shadow_read_modify_write_preserves_every_observation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self._evidence(root)
+            proposal = router_core.learning_proposals(root)[0]
+            router_core.start_shadow(proposal["proposal_id"], root)
+            threads = [
+                threading.Thread(
+                    target=router_core.record_shadow_observation,
+                    args=(proposal["proposal_id"], True, root),
+                )
+                for _ in range(20)
+            ]
+            [thread.start() for thread in threads]
+            [thread.join() for thread in threads]
+            item = router_core.load_shadows(root)["items"][proposal["proposal_id"]]
+            self.assertEqual(len(item["observations"]), 20)
+            self.assertEqual(item["state"], "active")
 
     def test_verified_high_risk_regression_blocks_readiness(self):
         with tempfile.TemporaryDirectory() as d:
@@ -326,12 +458,14 @@ class IntelligenceTests(unittest.TestCase):
                     objective_verification=True,
                     user_confirmed=True,
                     replacement_role="direct",
-                    replacement_model="gpt-5.6-luna",
-                    replacement_effort="medium",
+                    replacement_model="gpt-5.6-sol",
+                    replacement_effort="low",
                     root=root,
                 )
             proposal = next(
-                x for x in router_core.learning_proposals(root) if x["axis"] == "model"
+                x
+                for x in router_core.learning_proposals(root)
+                if x["axis"] == "reasoning_effort"
             )
             router_core.start_shadow(proposal["proposal_id"], root)
             engine = router_core.RouterEngine(root)
