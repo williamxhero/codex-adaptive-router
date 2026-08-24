@@ -1,0 +1,15 @@
+{
+  "learning": {
+    "minimum_confidence": 0.85,
+    "minimum_distinct_projects_for_global": 2,
+    "minimum_independent_sessions": 3,
+    "minimum_replacement_outcomes": 5,
+    "shadow_maximum_losses": 1,
+    "shadow_minimum_comparable": 10,
+    "shadow_minimum_support": 8
+  },
+  "overrides": [],
+  "revision": 1,
+  "schema_version": 2,
+  "updated_at": "2026-08-24T13:52:59Z"
+}
