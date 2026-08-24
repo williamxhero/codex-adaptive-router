@@ -10,7 +10,7 @@ Use this Skill whenever a request is non-trivial, spans multiple files or tools,
 ## Route
 
 1. If the user explicitly specifies a model, reasoning effort, agent, or asks for no delegation, honor that request unless a higher-priority safety rule prevents it.
-2. Call `adaptive_router.route_plan` with a concise task summary. Pass `task_state: "frozen"` only after the relevant specification and semantics are settled.
+2. `UserPromptSubmit` creates the task and initial route. Call `adaptive_router.route_plan` with its `task_ref` to confirm it idempotently; include structured `decision_features` and user `constraints` when known. Pass `task_state: "frozen"` only after semantics are settled.
 3. Treat the returned route as a default. Correct it when direct evidence from the task makes another role safer, and state the reason briefly.
 4. Spawn at most one specialist by default. Use parallel specialists only when their work is genuinely independent and the extra evidence or isolation is worth the token cost.
 5. The primary thread owns the final intent, cross-agent integration, and all important conclusions.
@@ -41,4 +41,4 @@ When the task concerns strategies, backtests, market regimes, factor exposures, 
 
 After meaningful routed work, call `adaptive_router.record_route_outcome` only when there is real evidence: verification passed, user correction, material failure, escalation, or a deliberate model override. Do not manufacture outcomes.
 
-For an escalation or override, provide the replacement role/model/effort. The local engine uses repeated independent outcomes to create a proposal; it never changes policy from one task.
+For an escalation or override, provide the replacement role/model/effort. Proposal evidence also requires objective verification and explicit user confirmation. Role/model/effort proposals are independent axes; policy never changes automatically.

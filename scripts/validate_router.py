@@ -22,27 +22,38 @@ import router_core
 def load_json(path: Path) -> dict:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
-        raise ValueError(f"{path} must contain an object")
+        raise TypeError(f"{path} must contain an object")
     return value
 
 
 def main() -> int:
     manifest = load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json")
-    if manifest.get("name") != PLUGIN_ROOT.name:
-        raise ValueError("manifest name must equal plugin directory name")
+    if (
+        manifest.get("name") != "codex-adaptive-router"
+        or manifest.get("version") != "1.1.0"
+    ):
+        raise ValueError("manifest identity/version is invalid")
     mcp = load_json(PLUGIN_ROOT / ".mcp.json")
     router_mcp = mcp.get("mcpServers", {}).get("adaptive_router")
     if not isinstance(router_mcp, dict):
-        raise ValueError("adaptive_router MCP server is missing")
-    if router_mcp.get("cwd") != "." or router_mcp.get("args") != ["./scripts/router_mcp.py"]:
-        raise ValueError("adaptive_router MCP server must use plugin-relative working directory")
+        raise TypeError("adaptive_router MCP server is missing")
+    if router_mcp.get("cwd") != "." or router_mcp.get("args") != [
+        "./scripts/router_mcp.py"
+    ]:
+        raise ValueError(
+            "adaptive_router MCP server must use plugin-relative working directory"
+        )
     load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
     for profile_name in router_core.available_profiles():
         profile = router_core.load_profile(profile_name)
         for role, config in profile["roles"].items():
-            if config.get("model") not in router_core.VALID_MODELS:
+            if config.get("default_model") not in router_core.VALID_MODELS:
                 raise ValueError(f"{profile_name}/{role} uses an invalid model")
-            if config.get("effort") not in router_core.VALID_EFFORTS:
+            effort = config.get("effort", {})
+            if not isinstance(effort, dict) or any(
+                effort.get(key) not in router_core.VALID_EFFORTS
+                for key in ("min", "default", "max")
+            ):
                 raise ValueError(f"{profile_name}/{role} uses an invalid effort")
     if tomllib is not None:
         for agent in (PLUGIN_ROOT / "templates" / "agents").glob("*.toml"):

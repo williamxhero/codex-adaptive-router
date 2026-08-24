@@ -1,7 +1,7 @@
 {
   "name": "codex-adaptive-router",
-  "version": "1.0.1",
-  "description": "Local, evidence-driven model and reasoning router for Codex.",
+  "version": "1.1.0",
+  "description": "Privacy-bounded Outcome Intelligence and adaptive routing for Codex.",
   "author": {
     "name": "williamxhero"
   },
@@ -16,6 +16,7 @@
       "Adaptive subagent routing",
       "Local routing history",
       "Shadow policy evaluation",
+      "Outcome Intelligence metrics",
       "Gardener-compatible learning proposals",
       "Quant research routing profile"
     ],

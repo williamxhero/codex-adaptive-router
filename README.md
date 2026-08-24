@@ -1,6 +1,6 @@
 # Codex Adaptive Router
 
-`codex-adaptive-router` is a local Codex plugin that routes non-trivial work to the appropriate GPT-5.6 model and reasoning effort, while keeping the primary thread responsible for intent and final integration.
+`codex-adaptive-router` 1.1 adds privacy-bounded Outcome Intelligence: each user turn becomes a correlated task, execution evidence is aggregated, outcomes produce metrics and axis-specific proposals, shadow evaluation remains non-enforcing, and only explicit human confirmation revises policy.
 
 It is designed for all projects, with a generic profile by default and a stricter `quant` profile for quantitative research and backtesting.
 
@@ -44,16 +44,16 @@ codex-adaptive-router/
 └── docs/                           Detailed architecture and Gardener bridge
 ```
 
-## Runtime flow
+## Outcome Intelligence loop
 
 ```text
 User task
-  -> UserPromptSubmit Hook adds a compact route hint
-  -> Primary thread calls adaptive_router.route_plan for non-trivial work
-  -> Primary thread works directly or spawns the selected specialist
-  -> Verified result / correction / escalation records outcome evidence
-  -> Repeated independent evidence creates a proposal
-  -> Shadow evaluation observes the proposal without enforcing it
+  -> UserPromptSubmit creates task_ref + initial route
+  -> route_plan(task_ref=...) confirms it without rerouting
+  -> tool and subagent hooks aggregate execution evidence
+  -> Stop creates a provisional outcome; later verification/correction enriches it
+  -> objective, user-confirmed replacement evidence creates axis-specific proposals
+  -> eligible tasks compare incumbent + candidate without enforcing the candidate
   -> Explicit user confirmation activates the new versioned policy
 ```
 
@@ -61,15 +61,21 @@ The hooks fail open: a routing-storage or classification issue never blocks ordi
 
 ## Learning safeguards
 
-The local event log stores only hashed task/session/project identifiers plus route and outcome metadata. It never stores raw prompts, source paths, tool output, code, logs, or credentials.
+The local event log uses a private local salt and HMAC identities. It stores append-only event IDs/sequences plus structured classifications and aggregates. It never stores or uploads raw prompts, paths, code, tool input/output, assistant messages, transcripts, credentials, or secrets. Hooks fail open; GitHub sync and privacy validation fail closed.
 
 A learned policy cannot activate from one task. It must pass all of these gates:
 
-1. At least three independent sessions with mean outcome confidence of at least `0.85`.
-2. At least two distinct project fingerprints before a proposal is considered global.
-3. Shadow evaluation: the proposal is advisory and the old policy remains active.
-4. Five successful shadow observations; two failures reject it.
+1. At least five same-direction, objective, user-confirmed replacement outcomes across three sessions, mean confidence `>= 0.85`, and no verified high-risk regression.
+2. At least two distinct project fingerprints before a proposal is global.
+3. Role, model, and effort proposals are independent axes.
+4. Shadow readiness requires 10 comparable observations, 8 candidate wins, at most 1 loss, and no high-risk regression. An unexecuted downgrade is inconclusive.
 5. An explicit `confirmed_by_user: true` tool call.
+
+Contextual bandits and automatically learned classifier weights are prohibited before a later design review with 50-100 high-quality outcomes. v1 evidence stays read-only.
+
+## GitHub evolution governance
+
+The sync writes immutable `batches/`, hash-chained `manifests/`, versioned `policies/revision-N.json`, and recomputable `metrics/revision-N.json`; `latest.json` is the only mutable pointer. Root-level v1 artifacts are marked legacy. CI rejects schema, privacy, secret/path, hash-chain, duplicate-ID, and append-only violations. A run without `--push` uses a temporary preview and leaves the dedicated clone clean.
 
 The active policy is versioned at `PLUGIN_DATA/policy/current.json` when Codex supplies `PLUGIN_DATA`; otherwise it uses `~/.codex/codex-adaptive-router/`.
 
@@ -114,7 +120,7 @@ python -m unittest discover -s tests -v
 
 ## Current limitations
 
-- Profile inference is deterministic keyword/risk classification. The primary thread can correct it after inspecting the task.
+- Decision Features v1 performs deterministic structured risk/cognitive classification; keywords are only a fallback.
 - Cost/quality outcomes are intentionally evidence-driven; token usage is not assumed to be available from every Codex Hook surface.
 - The Router does not automatically use Max or Ultra.
 - An active thread's primary model remains unchanged; use a future launcher for true pre-thread model selection.

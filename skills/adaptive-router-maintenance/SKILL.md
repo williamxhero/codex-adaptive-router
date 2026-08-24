@@ -19,7 +19,7 @@ Use only when the user explicitly asks to review or improve Adaptive Router poli
 1. Start shadow evaluation only for a `ready_for_shadow` proposal.
 2. A shadow route is advisory only; the current policy stays active.
 3. Record a shadow observation only when the actual result supplies evidence that the shadow route would or would not have been better.
-4. Two shadow failures reject the proposal. The configured success threshold validates it for user confirmation.
+4. Results are `candidate_win`, `incumbent_win`, `tie`, or `inconclusive`; an unexecuted downgrade is inconclusive. Readiness defaults to 10 comparable observations, 8 wins, at most 1 loss, no high-risk regression, and two projects for global policy.
 5. Never call `confirm_policy_change` until the user explicitly directs the exact policy change.
 
 ## Gardener bridge
