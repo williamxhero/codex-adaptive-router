@@ -1,30 +1,62 @@
-"""Export privacy-bounded Adaptive Router evidence and push it to GitHub.
-
-The export deliberately excludes raw prompts, paths, tool output, code, logs,
-credentials, and secrets.  It uses a dedicated clean clone so an unrelated
-plugin development worktree can never be committed by this job.
-"""
+"""Fail-closed immutable GitHub evolution export for Adaptive Router v1.1."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PLUGIN_ROOT = SCRIPT_DIR.parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+import router_core
 
 REPOSITORY_URL = "https://github.com/williamxhero/codex-adaptive-router.git"
-DEFAULT_REPOSITORY = Path.home() / ".codex" / "state" / "codex-adaptive-router-evolution-repo"
+DEFAULT_REPOSITORY = (
+    Path.home() / ".codex" / "state" / "codex-adaptive-router-evolution-repo"
+)
 DEFAULT_ROUTER_DATA_ROOT = Path.home() / ".codex" / "codex-adaptive-router"
-DEFAULT_HOOK_DATA_ROOT = Path.home() / ".codex" / "plugins" / "data" / "codex-adaptive-router-personal"
+DEFAULT_HOOK_DATA_ROOT = (
+    Path.home() / ".codex" / "plugins" / "data" / "codex-adaptive-router-personal"
+)
 FORBIDDEN_KEYS = {
-    "task", "prompt", "raw_prompt", "path", "source_path", "output", "tool_output",
-    "code", "log", "logs", "credential", "credentials", "secret", "secrets", "token",
+    "task",
+    "prompt",
+    "raw_prompt",
+    "path",
+    "source_path",
+    "output",
+    "tool_input",
+    "tool_output",
+    "assistant_message",
+    "last_assistant_message",
+    "transcript",
+    "transcript_path",
+    "code",
+    "log",
+    "logs",
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+    "api_key",
+    "private_key",
 }
+PATH_PATTERN = re.compile(
+    r"(?:[A-Za-z]:\\|/(?:Users|home|data|workspace|tmp)/)", re.IGNORECASE
+)
+SECRET_PATTERN = re.compile(
+    r"(?:sk-[A-Za-z0-9_-]{16,}|gh[opusr]_[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16})"
+)
 
 
 class SyncError(RuntimeError):
@@ -32,9 +64,13 @@ class SyncError(RuntimeError):
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
-    completed = subprocess.run(args, cwd=cwd, text=True, capture_output=True)
+    completed = subprocess.run(
+        args, cwd=cwd, text=True, capture_output=True, check=False
+    )
     if completed.returncode:
-        raise SyncError(f"{' '.join(args)} failed: {completed.stderr.strip() or completed.stdout.strip()}")
+        raise SyncError(
+            f"{' '.join(args)} failed: {completed.stderr.strip() or completed.stdout.strip()}"
+        )
     return completed.stdout.strip()
 
 
@@ -42,11 +78,18 @@ def assert_safe(value: Any) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if str(key).lower() in FORBIDDEN_KEYS:
-                raise SyncError(f"refusing to export forbidden field: {key}")
+                raise SyncError(f"refusing forbidden field: {key}")
             assert_safe(item)
     elif isinstance(value, list):
         for item in value:
             assert_safe(item)
+    elif isinstance(value, str):
+        if PATH_PATTERN.search(value):
+            raise SyncError("refusing path-like value")
+        if SECRET_PATTERN.search(value):
+            raise SyncError("refusing secret-like value")
+        if len(value) > 240:
+            raise SyncError("refusing unbounded text value")
 
 
 def read_json(path: Path, fallback: Any) -> Any:
@@ -60,19 +103,19 @@ def read_json(path: Path, fallback: Any) -> Any:
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    records: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    result = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
-            record = json.loads(line)
+            value = json.loads(line)
         except json.JSONDecodeError as error:
-            raise SyncError(f"invalid routing event at line {line_number}: {error}") from error
-        if not isinstance(record, dict):
-            raise SyncError(f"routing event at line {line_number} is not an object")
-        assert_safe(record)
-        records.append(record)
-    return records
+            raise SyncError(f"invalid event line {number}: {error}") from error
+        if not isinstance(value, dict):
+            raise SyncError(f"event line {number} is not an object")
+        assert_safe(value)
+        result.append(value)
+    return result
 
 
 def ensure_clean_clone(repository: Path) -> None:
@@ -80,80 +123,194 @@ def ensure_clean_clone(repository: Path) -> None:
         repository.parent.mkdir(parents=True, exist_ok=True)
         run("git", "clone", REPOSITORY_URL, str(repository))
     if not (repository / ".git").is_dir():
-        raise SyncError(f"repository path is not a git clone: {repository}")
+        raise SyncError("repository path is not a git clone")
     if run("git", "status", "--porcelain", cwd=repository):
-        raise SyncError("dedicated evolution clone is dirty; refusing to touch it")
+        raise SyncError("dedicated evolution clone is dirty")
     run("git", "fetch", "origin", "main", cwd=repository)
     run("git", "checkout", "main", cwd=repository)
     run("git", "pull", "--ff-only", "origin", "main", cwd=repository)
 
 
 def merged_records(*roots: Path) -> list[dict[str, Any]]:
-    unique: dict[str, dict[str, Any]] = {}
+    by_id = {}
     for root in roots:
         for record in read_jsonl(root / "events" / "routing.jsonl"):
-            unique[json.dumps(record, ensure_ascii=False, sort_keys=True)] = record
-    return [unique[key] for key in sorted(unique)]
+            event_id = str(
+                record.get("event_id")
+                or hashlib.sha256(
+                    json.dumps(record, sort_keys=True).encode()
+                ).hexdigest()
+            )
+            if event_id in by_id and by_id[event_id] != record:
+                raise SyncError(
+                    f"duplicate event id with different payload: {event_id}"
+                )
+            by_id[event_id] = record
+    return sorted(
+        by_id.values(),
+        key=lambda x: (int(x.get("sequence") or 0), str(x.get("event_id") or "")),
+    )
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_new(path: Path, data: str) -> None:
+    if path.exists():
+        if path.read_text(encoding="utf-8") != data:
+            raise SyncError(f"immutable artifact differs: {path.name}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(data, encoding="utf-8")
 
 
 def write_export(router_data_root: Path, hook_data_root: Path, repository: Path) -> int:
     records = merged_records(router_data_root, hook_data_root)
-    policy = read_json(router_data_root / "policy" / "current.json", {})
-    shadows = read_json(router_data_root / "learning" / "shadows.json", {})
-    route_count = sum(record.get("type") == "route" for record in records)
-    outcome_count = sum(record.get("type") == "outcome" for record in records)
-    exported_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
     target = repository / "evolution-data"
     target.mkdir(parents=True, exist_ok=True)
-    (target / "routing.jsonl").write_text(
-        "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records),
-        encoding="utf-8",
+    _write_new(
+        target / "legacy-v1.json",
+        (PLUGIN_ROOT / "evolution-data" / "legacy-v1.json").read_text(encoding="utf-8"),
     )
-    (target / "policy.json").write_text(json.dumps(policy, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (target / "shadows.json").write_text(json.dumps(shadows, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (target / "status.json").write_text(json.dumps({
-        "schema_version": 1,
-        "exported_at": exported_at,
-        "stored_routes": route_count,
-        "stored_outcomes": outcome_count,
-        "policy_revision": policy.get("revision", policy.get("policy_revision", 1)),
-    }, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (target / "README.md").write_text(
-        "# Adaptive Router evolution data\n\n"
-        "This directory is generated by the user-level sync job. It contains only privacy-bounded "
-        "routing metadata: hashed identifiers, route/outcome evidence, policy revisions, and shadow "
-        "evaluation state. Raw prompts, paths, source, tool output, logs, credentials, and secrets are rejected.\n",
-        encoding="utf-8",
+    _write_new(
+        target / "schemas" / "event-v2.schema.json",
+        (PLUGIN_ROOT / "evolution-data" / "schemas" / "event-v2.schema.json").read_text(
+            encoding="utf-8"
+        ),
     )
-    return route_count
+    existing_ids = set()
+    for batch in (
+        (target / "batches").glob("*.jsonl") if (target / "batches").exists() else []
+    ):
+        for item in read_jsonl(batch):
+            existing_ids.add(str(item.get("event_id")))
+    fresh = [x for x in records if str(x.get("event_id")) not in existing_ids]
+    previous = None
+    latest = target / "latest.json"
+    if latest.exists():
+        previous = read_json(latest, {}).get("manifest_sha256")
+    manifest_name = None
+    if fresh:
+        first = str(fresh[0].get("sequence") or 0)
+        last = str(fresh[-1].get("sequence") or 0)
+        batch_name = f"batch-{first}-{last}.jsonl"
+        batch_path = target / "batches" / batch_name
+        _write_new(
+            batch_path,
+            "".join(
+                json.dumps(x, ensure_ascii=False, sort_keys=True) + "\n" for x in fresh
+            ),
+        )
+        manifest = {
+            "schema_version": 2,
+            "batch": batch_name,
+            "count": len(fresh),
+            "sha256": sha256(batch_path),
+            "previous_manifest_sha256": previous,
+            "created_at": datetime.now(UTC)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+        manifest_name = f"manifest-{first}-{last}.json"
+        manifest_path = target / "manifests" / manifest_name
+        _write_new(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        previous = sha256(manifest_path)
+    current_policy = router_data_root / "policy" / "current.json"
+    existing_revision = target / "policies" / "revision-1.json"
+    policy = read_json(
+        current_policy,
+        read_json(existing_revision, router_core.default_policy()),
+    )
+    revision = int(policy.get("revision") or 1)
+    _write_new(
+        target / "policies" / f"revision-{revision}.json",
+        json.dumps(policy, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        metrics_root = Path(directory)
+        metrics_events = metrics_root / "events" / "routing.jsonl"
+        metrics_events.parent.mkdir(parents=True)
+        metrics_events.write_text(
+            "".join(json.dumps(item, sort_keys=True) + "\n" for item in records),
+            encoding="utf-8",
+        )
+        metrics = router_core.router_metrics(metrics_root)
+    _write_new(
+        target / "metrics" / f"revision-{revision}.json",
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n",
+    )
+    latest_value = {
+        "schema_version": 2,
+        "policy_revision": revision,
+        "manifest": manifest_name or read_json(latest, {}).get("manifest"),
+        "manifest_sha256": previous,
+        "event_count": len(records),
+    }
+    latest.write_text(
+        json.dumps(latest_value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return len(records)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPOSITORY)
-    parser.add_argument("--router-data-root", type=Path, default=Path(os.environ.get("CODEX_ADAPTIVE_ROUTER_DATA", DEFAULT_ROUTER_DATA_ROOT)))
+    parser.add_argument(
+        "--router-data-root",
+        type=Path,
+        default=Path(
+            os.environ.get("CODEX_ADAPTIVE_ROUTER_DATA", DEFAULT_ROUTER_DATA_ROOT)
+        ),
+    )
     parser.add_argument("--hook-data-root", type=Path, default=DEFAULT_HOOK_DATA_ROOT)
-    parser.add_argument("--push", action="store_true", help="commit and push an export when evidence changed")
+    parser.add_argument("--push", action="store_true")
     args = parser.parse_args()
-
     try:
         ensure_clean_clone(args.repo)
+        if not args.push:
+            with tempfile.TemporaryDirectory() as directory:
+                preview = Path(directory) / "repo"
+                preview.mkdir()
+                routes = write_export(
+                    args.router_data_root, args.hook_data_root, preview
+                )
+            print(
+                json.dumps(
+                    {
+                        "changed": True,
+                        "pushed": False,
+                        "stored_routes": routes,
+                        "worktree_clean": True,
+                    }
+                )
+            )
+            return 0
         routes = write_export(args.router_data_root, args.hook_data_root, args.repo)
         run("git", "add", "--", "evolution-data", cwd=args.repo)
-        changed = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=args.repo).returncode != 0
+        changed = (
+            subprocess.run(
+                ["git", "diff", "--cached", "--quiet"], cwd=args.repo, check=False
+            ).returncode
+            != 0
+        )
         if not changed:
             print(json.dumps({"changed": False, "stored_routes": routes}))
             return 0
-        if not args.push:
-            run("git", "restore", "--staged", "--", "evolution-data", cwd=args.repo)
-            print(json.dumps({"changed": True, "pushed": False, "stored_routes": routes}))
-            return 0
-        run("git", "commit", "-m", "chore(evolution): sync adaptive router evidence", "--", "evolution-data", cwd=args.repo)
+        run(
+            "git",
+            "commit",
+            "-m",
+            "chore(evolution): append outcome intelligence batch",
+            "--",
+            "evolution-data",
+            cwd=args.repo,
+        )
         run("git", "push", "origin", "HEAD:main", cwd=args.repo)
         print(json.dumps({"changed": True, "pushed": True, "stored_routes": routes}))
         return 0
-    except SyncError as error:
+    except (SyncError, OSError, ValueError, json.JSONDecodeError) as error:
         print(f"Adaptive Router evolution sync failed: {error}", file=sys.stderr)
         return 1
 
