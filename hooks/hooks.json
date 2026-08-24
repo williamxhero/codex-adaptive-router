@@ -1,5 +1,5 @@
 {
-  "description": "Inject compact routing context and collect privacy-bounded lifecycle evidence without blocking normal Codex work.",
+  "description": "Create per-turn routes and collect privacy-bounded execution/outcome evidence without blocking normal Codex work.",
   "hooks": {
     "SessionStart": [
       {
