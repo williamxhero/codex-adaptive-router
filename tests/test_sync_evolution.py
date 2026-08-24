@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,23 @@ class SyncTests(unittest.TestCase):
             sync_evolution_data.assert_safe(
                 {"value": "s" + "k-" + "abcdefghijklmnopqrstuvwxyz"}
             )
+
+    def test_new_evidence_appends_metrics_revision_without_policy_change(self):
+        with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as repo:
+            root = Path(data)
+            target = Path(repo)
+            engine = router_core.RouterEngine(root)
+            engine.begin_task(session_id="s", turn_id="1", prompt="Search code")
+            sync_evolution_data.write_export(root, Path(data) / "other", target)
+            engine.begin_task(session_id="s", turn_id="2", prompt="Run tests")
+            sync_evolution_data.write_export(root, Path(data) / "other", target)
+            latest = json.loads((target / "evolution-data" / "latest.json").read_text())
+            self.assertEqual(latest["policy_revision"], 1)
+            self.assertEqual(latest["metrics_revision"], 2)
+            self.assertEqual(
+                len(list((target / "evolution-data" / "metrics").glob("*.json"))), 2
+            )
+            validate_evolution.validate(target)
 
     def test_no_push_preview_leaves_git_worktree_clean(self):
         with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as repo:

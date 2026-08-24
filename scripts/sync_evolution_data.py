@@ -237,13 +237,33 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
             encoding="utf-8",
         )
         metrics = router_core.router_metrics(metrics_root)
-    _write_new(
-        target / "metrics" / f"revision-{revision}.json",
-        json.dumps(metrics, indent=2, sort_keys=True) + "\n",
+    rendered_metrics = json.dumps(metrics, indent=2, sort_keys=True) + "\n"
+    metric_paths = (
+        list((target / "metrics").glob("revision-*.json"))
+        if (target / "metrics").exists()
+        else []
     )
+    latest_metric = (
+        max(metric_paths, key=lambda path: int(path.stem.split("-")[1]))
+        if metric_paths
+        else None
+    )
+    if (
+        latest_metric is not None
+        and latest_metric.read_text(encoding="utf-8") == rendered_metrics
+    ):
+        metrics_revision = int(latest_metric.stem.split("-")[1])
+    else:
+        metrics_revision = (
+            max((int(path.stem.split("-")[1]) for path in metric_paths), default=0) + 1
+        )
+        _write_new(
+            target / "metrics" / f"revision-{metrics_revision}.json", rendered_metrics
+        )
     latest_value = {
         "schema_version": 2,
         "policy_revision": revision,
+        "metrics_revision": metrics_revision,
         "manifest": manifest_name or read_json(latest, {}).get("manifest"),
         "manifest_sha256": previous,
         "event_count": len(records),
