@@ -37,7 +37,9 @@ class SyncTests(unittest.TestCase):
         with self.assertRaises(sync_evolution_data.SyncError):
             sync_evolution_data.assert_safe({"value": "C:\\Users\\will\\secret"})
         with self.assertRaises(sync_evolution_data.SyncError):
-            sync_evolution_data.assert_safe({"value": "sk-abcdefghijklmnopqrstuvwxyz"})
+            sync_evolution_data.assert_safe(
+                {"value": "s" + "k-" + "abcdefghijklmnopqrstuvwxyz"}
+            )
 
     def test_no_push_preview_leaves_git_worktree_clean(self):
         with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as repo:

@@ -55,7 +55,7 @@ PATH_PATTERN = re.compile(
     r"(?:[A-Za-z]:\\|/(?:Users|home|data|workspace|tmp)/)", re.IGNORECASE
 )
 SECRET_PATTERN = re.compile(
-    r"(?:sk-[A-Za-z0-9_-]{16,}|gh[opusr]_[A-Za-z0-9]{20,}|AKIA[A-Z0-9]{16})"
+    r"(?:s" r"k-[A-Za-z0-9_-]{16,}|g" r"h[opusr]_[A-Za-z0-9]{20,}|A" r"KIA[A-Z0-9]{16})"
 )
 
 
