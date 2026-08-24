@@ -1,0 +1,96 @@
+{
+  "description": "Inject compact routing context and collect privacy-bounded lifecycle evidence without blocking normal Codex work.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" SessionStart",
+            "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd SessionStart",
+            "timeout": 3,
+            "additionalContextLimit": 500,
+            "statusMessage": "Loading Adaptive Router policy"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" UserPromptSubmit",
+            "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd UserPromptSubmit",
+            "timeout": 3,
+            "additionalContextLimit": 700
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" PostToolUse",
+            "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd PostToolUse",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" SubagentStart",
+            "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd SubagentStart",
+            "timeout": 3,
+            "additionalContextLimit": 350
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" SubagentStop",
+            "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd SubagentStop",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" Stop",
+            "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd Stop",
+            "timeout": 3,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" SessionEnd",
+            "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd SessionEnd",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

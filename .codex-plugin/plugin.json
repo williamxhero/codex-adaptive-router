@@ -1,0 +1,28 @@
+{
+  "name": "codex-adaptive-router",
+  "version": "1.0.0",
+  "description": "Local, evidence-driven model and reasoning router for Codex.",
+  "author": {
+    "name": "williamxhero"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Adaptive Router",
+    "shortDescription": "Route work to the right Codex model and reasoning effort.",
+    "longDescription": "Routes Codex work by cognitive risk, records privacy-bounded routing evidence locally, and proposes policy improvements only after repeated evidence and shadow validation.",
+    "developerName": "williamxhero",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Adaptive subagent routing",
+      "Local routing history",
+      "Shadow policy evaluation",
+      "Gardener-compatible learning proposals",
+      "Quant research routing profile"
+    ],
+    "defaultPrompt": [
+      "Use Codex Adaptive Router to plan the safest model and reasoning route for this task.",
+      "Show the current Adaptive Router policy status and any pending learning proposals."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "generic",
+  "description": "Cross-project default profile. Prefer direct work for tiny tasks and specialist agents only when their evidence or isolation is useful.",
+  "roles": {
+    "direct": { "model": "gpt-5.6", "effort": "medium" },
+    "router_code_mapper": { "model": "gpt-5.6-luna", "effort": "medium" },
+    "router_experiment_runner": { "model": "gpt-5.6-luna", "effort": "medium" },
+    "router_research_engineer": { "model": "gpt-5.6-terra", "effort": "high" },
+    "router_researcher": { "model": "gpt-5.6", "effort": "high" },
+    "router_architect": { "model": "gpt-5.6", "effort": "high" },
+    "router_adversarial_auditor": { "model": "gpt-5.6", "effort": "xhigh" },
+    "router_strategy_scout": { "model": "gpt-5.6", "effort": "xhigh" }
+  }
+}
