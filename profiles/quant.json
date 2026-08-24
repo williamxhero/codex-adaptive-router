@@ -1,19 +1,9 @@
-{
-  "name": "quant",
-  "description": "Quantitative research, backtesting, and strategy-development profile. Low-cost agents collect evidence; Sol agents own research and market-semantic conclusions.",
-  "roles": {
-    "direct": { "model": "gpt-5.6-sol", "effort": "medium" },
-    "router_code_mapper": { "model": "gpt-5.6-luna", "effort": "medium" },
-    "router_experiment_runner": { "model": "gpt-5.6-luna", "effort": "medium" },
-    "router_research_engineer": { "model": "gpt-5.6-terra", "effort": "high" },
-    "router_researcher": { "model": "gpt-5.6-sol", "effort": "high" },
-    "router_architect": { "model": "gpt-5.6-sol", "effort": "high" },
-    "router_adversarial_auditor": { "model": "gpt-5.6-sol", "effort": "xhigh" },
-    "router_strategy_scout": { "model": "gpt-5.6-sol", "effort": "xhigh" }
-  },
-  "quality_gates": [
-    "Do not accept a strategy from one return metric.",
-    "Escalate undefined market semantics, statistical ambiguity, and unexplained results to Sol.",
-    "Run adversarial review before accepting unusually strong results or a deployment decision."
-  ]
-}
+{"schema_version":2,"name":"quant","description":"Quant profile with Sol-owned research and market semantics.","roles":{
+"direct":{"capabilities":["bounded direct work"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"low","default":"medium","max":"xhigh"},"sol_escalation_conditions":[]},
+"router_code_mapper":{"capabilities":["code search","data lineage"],"allowed_models":["gpt-5.6-luna"],"default_model":"gpt-5.6-luna","effort":{"min":"low","default":"medium","max":"high"},"sol_escalation_conditions":["market semantics","research conclusion"]},
+"router_experiment_runner":{"capabilities":["backtests","metrics"],"allowed_models":["gpt-5.6-luna"],"default_model":"gpt-5.6-luna","effort":{"min":"low","default":"medium","max":"high"},"sol_escalation_conditions":["statistical conclusion","conflicting evidence"]},
+"router_research_engineer":{"capabilities":["frozen-protocol implementation"],"allowed_models":["gpt-5.6-terra"],"default_model":"gpt-5.6-terra","effort":{"min":"medium","default":"high","max":"xhigh"},"sol_escalation_conditions":["market semantics","statistical conclusion","irreversible architecture"]},
+"router_researcher":{"capabilities":["quant research"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"medium","default":"high","max":"xhigh"},"sol_escalation_conditions":[]},
+"router_architect":{"capabilities":["market semantics","accounting"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"high","max":"xhigh"},"sol_escalation_conditions":[]},
+"router_adversarial_auditor":{"capabilities":["leakage audit"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"xhigh","max":"xhigh"},"sol_escalation_conditions":[]},
+"router_strategy_scout":{"capabilities":["novel strategy exploration"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"xhigh","max":"xhigh"},"sol_escalation_conditions":[]}},"quality_gates":["out-of-sample","costs","turnover","concentration","leakage","multiple-testing"]}

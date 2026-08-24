@@ -1,14 +1,9 @@
-{
-  "name": "generic",
-  "description": "Cross-project default profile. Prefer direct work for tiny tasks and specialist agents only when their evidence or isolation is useful.",
-  "roles": {
-    "direct": { "model": "gpt-5.6-sol", "effort": "medium" },
-    "router_code_mapper": { "model": "gpt-5.6-luna", "effort": "medium" },
-    "router_experiment_runner": { "model": "gpt-5.6-luna", "effort": "medium" },
-    "router_research_engineer": { "model": "gpt-5.6-terra", "effort": "high" },
-    "router_researcher": { "model": "gpt-5.6-sol", "effort": "high" },
-    "router_architect": { "model": "gpt-5.6-sol", "effort": "high" },
-    "router_adversarial_auditor": { "model": "gpt-5.6-sol", "effort": "xhigh" },
-    "router_strategy_scout": { "model": "gpt-5.6-sol", "effort": "xhigh" }
-  }
-}
+{"schema_version":2,"name":"generic","description":"Cross-project structured-risk routing profile.","roles":{
+"direct":{"capabilities":["bounded direct work"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"low","default":"medium","max":"xhigh"},"sol_escalation_conditions":[]},
+"router_code_mapper":{"capabilities":["code search","call chains"],"allowed_models":["gpt-5.6-luna"],"default_model":"gpt-5.6-luna","effort":{"min":"low","default":"medium","max":"high"},"sol_escalation_conditions":["undefined semantics","research conclusion"]},
+"router_experiment_runner":{"capabilities":["tests","benchmarks","metrics"],"allowed_models":["gpt-5.6-luna"],"default_model":"gpt-5.6-luna","effort":{"min":"low","default":"medium","max":"high"},"sol_escalation_conditions":["conflicting evidence","research conclusion"]},
+"router_research_engineer":{"capabilities":["frozen-spec implementation"],"allowed_models":["gpt-5.6-terra"],"default_model":"gpt-5.6-terra","effort":{"min":"medium","default":"high","max":"xhigh"},"sol_escalation_conditions":["undefined semantics","irreversible architecture","research conclusion"]},
+"router_researcher":{"capabilities":["diagnosis","research"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"medium","default":"high","max":"xhigh"},"sol_escalation_conditions":[]},
+"router_architect":{"capabilities":["architecture","semantics"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"high","max":"xhigh"},"sol_escalation_conditions":[]},
+"router_adversarial_auditor":{"capabilities":["adversarial review"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"xhigh","max":"xhigh"},"sol_escalation_conditions":[]},
+"router_strategy_scout":{"capabilities":["novel exploration"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"xhigh","max":"xhigh"},"sol_escalation_conditions":[]}}}

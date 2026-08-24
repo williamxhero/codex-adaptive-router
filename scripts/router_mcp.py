@@ -1,4 +1,4 @@
-"""Small stdio MCP server exposing the local Adaptive Router policy engine."""
+"""Dependency-free stdio MCP surface for Router Engine v1.1."""
 
 from __future__ import annotations
 
@@ -10,130 +10,188 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-
 import router_core
 
-
+MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"]
+BANDS = ["unknown", "low", "medium", "high", "very_high"]
 TOOLS = [
     {
         "name": "route_plan",
-        "description": "Classify a Codex task by cognitive risk, select a profile, model, reasoning effort, and specialist role, then record a privacy-bounded route decision locally.",
+        "description": "Plan or idempotently confirm a task route using structured decision features.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "task": {"type": "string", "description": "Task summary. It is hashed before persistence; raw text is not stored."},
+                "task": {"type": "string"},
+                "task_ref": {"type": "string"},
                 "profile": {"type": "string", "enum": ["generic", "quant"]},
-                "task_state": {"type": "string", "enum": ["unknown", "frozen"], "description": "Use frozen only after the relevant specification is settled."},
-                "force_role": {"type": "string", "description": "Optional explicit role override when the user or project contract requires one."},
-                "session_id": {"type": "string", "description": "Optional session identifier; persisted only as a hash."},
-                "project_fingerprint": {"type": "string", "description": "Optional stable project identifier; persisted only as a hash."},
-                "record": {"type": "boolean", "default": True}
+                "task_state": {"type": "string", "enum": ["unknown", "frozen"]},
+                "force_role": {"type": "string"},
+                "session_id": {"type": "string"},
+                "project_fingerprint": {"type": "string"},
+                "decision_features": {"type": "object"},
+                "constraints": {"type": "object"},
+                "record": {"type": "boolean", "default": True},
             },
             "required": ["task"],
-            "additionalProperties": False
-        }
+            "additionalProperties": False,
+        },
     },
     {
         "name": "record_route_outcome",
-        "description": "Record a privacy-bounded outcome for a previous route. Use this when verification, user correction, or an escalation gives evidence about whether the route was adequate.",
+        "description": "Record v1-compatible or rich v2 outcome evidence.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "route_id": {"type": "string"},
-                "status": {"type": "string", "enum": ["completed", "verified", "failed", "corrected", "escalated", "overridden"]},
+                "status": {
+                    "type": "string",
+                    "enum": sorted(router_core.OUTCOME_STATUSES),
+                },
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                "verified": {"type": "boolean", "default": False},
+                "verified": {"type": "boolean"},
+                "quality_gate": {
+                    "type": "string",
+                    "enum": sorted(router_core.QUALITY_GATES),
+                },
+                "route_fit": {"type": "string", "enum": sorted(router_core.ROUTE_FITS)},
+                "verification_kinds": {"type": "array", "items": {"type": "string"}},
+                "objective_verification": {"type": "boolean"},
+                "user_confirmed": {"type": "boolean"},
+                "high_risk_regression": {"type": "boolean"},
                 "replacement_role": {"type": "string"},
-                "replacement_model": {"type": "string", "enum": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]},
-                "replacement_effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max", "ultra"]}
+                "replacement_model": {"type": "string", "enum": MODELS},
+                "replacement_effort": {"type": "string", "enum": EFFORTS},
+                "token_band": {"type": "string", "enum": BANDS},
+                "cost_band": {"type": "string", "enum": BANDS},
             },
             "required": ["route_id", "status", "confidence"],
-            "additionalProperties": False
-        }
+            "additionalProperties": False,
+        },
     },
     {
         "name": "router_policy_status",
-        "description": "Return local routing-policy revision, route/outcome counts, evidence proposals, and Gardener-compatible candidates. Does not expose raw prompts or paths.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}
+        "description": "Return coverage, metrics, proposals, and shadow state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "router_metrics",
+        "description": "Return recomputable Outcome Intelligence metrics.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
     },
     {
         "name": "start_shadow_evaluation",
-        "description": "Start a non-enforcing shadow evaluation for an evidence-backed route-policy proposal. The current policy remains active.",
+        "description": "Start non-enforcing counterfactual shadow evaluation.",
         "inputSchema": {
             "type": "object",
             "properties": {"proposal_id": {"type": "string"}},
             "required": ["proposal_id"],
-            "additionalProperties": False
-        }
+            "additionalProperties": False,
+        },
     },
     {
         "name": "record_shadow_observation",
-        "description": "Record whether one shadow recommendation would have been a better route. Two failures reject it; required successes validate it for user confirmation.",
+        "description": "Backward-compatible manual shadow evidence channel.",
         "inputSchema": {
             "type": "object",
-            "properties": {"proposal_id": {"type": "string"}, "success": {"type": "boolean"}},
+            "properties": {
+                "proposal_id": {"type": "string"},
+                "success": {"type": "boolean"},
+            },
             "required": ["proposal_id", "success"],
-            "additionalProperties": False
-        }
+            "additionalProperties": False,
+        },
     },
     {
         "name": "confirm_policy_change",
-        "description": "Apply a shadow-validated policy change. Requires an explicit confirmed_by_user=true value; the tool never auto-applies learning.",
+        "description": "Apply a validated axis-specific proposal only after explicit user confirmation.",
         "inputSchema": {
             "type": "object",
-            "properties": {"proposal_id": {"type": "string"}, "confirmed_by_user": {"type": "boolean", "const": True}},
+            "properties": {
+                "proposal_id": {"type": "string"},
+                "confirmed_by_user": {"type": "boolean", "const": True},
+            },
             "required": ["proposal_id", "confirmed_by_user"],
-            "additionalProperties": False
-        }
-    }
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
 def _result(value: Any) -> dict[str, Any]:
-    rendered = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
-    return {"content": [{"type": "text", "text": rendered}], "structuredContent": value}
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True),
+            }
+        ],
+        "structuredContent": value,
+    }
 
 
 def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": code, "message": message},
+    }
 
 
-def _tool_call(name: str, arguments: dict[str, Any]) -> Any:
+def _tool_call(name: str, a: dict[str, Any]) -> Any:
     if name == "route_plan":
-        task = str(arguments["task"])
-        plan = router_core.make_route_plan(
-            task,
-            profile=arguments.get("profile"),
-            task_state=str(arguments.get("task_state") or "unknown"),
-            force_role=arguments.get("force_role"),
+        return router_core.RouterEngine().plan_route(
+            str(a["task"]),
+            task_ref=a.get("task_ref"),
+            session_id=a.get("session_id"),
+            project_fingerprint=a.get("project_fingerprint"),
+            profile=a.get("profile"),
+            task_state=str(a.get("task_state") or "unknown"),
+            force_role=a.get("force_role"),
+            decision_features=a.get("decision_features"),
+            constraints=a.get("constraints"),
+            record=bool(a.get("record", True)),
         )
-        value = {key: getattr(plan, key) for key in plan.__dataclass_fields__}
-        if arguments.get("record", True):
-            value["record"] = router_core.create_route_record(
-                plan,
-                task,
-                session_id=arguments.get("session_id"),
-                project_fingerprint=arguments.get("project_fingerprint"),
-            )
-        return value
     if name == "record_route_outcome":
         return router_core.record_outcome(
-            str(arguments["route_id"]),
-            str(arguments["status"]),
-            confidence=float(arguments["confidence"]),
-            verified=bool(arguments.get("verified", False)),
-            replacement_role=arguments.get("replacement_role"),
-            replacement_model=arguments.get("replacement_model"),
-            replacement_effort=arguments.get("replacement_effort"),
+            str(a["route_id"]),
+            str(a["status"]),
+            confidence=float(a["confidence"]),
+            verified=bool(a.get("verified", False)),
+            quality_gate=a.get("quality_gate"),
+            route_fit=str(a.get("route_fit") or "unknown"),
+            verification_kinds=a.get("verification_kinds"),
+            objective_verification=bool(a.get("objective_verification", False)),
+            user_confirmed=bool(a.get("user_confirmed", False)),
+            high_risk_regression=bool(a.get("high_risk_regression", False)),
+            replacement_role=a.get("replacement_role"),
+            replacement_model=a.get("replacement_model"),
+            replacement_effort=a.get("replacement_effort"),
+            token_band=str(a.get("token_band") or "unknown"),
+            cost_band=str(a.get("cost_band") or "unknown"),
         )
     if name == "router_policy_status":
         return router_core.policy_status()
+    if name == "router_metrics":
+        return router_core.router_metrics()
     if name == "start_shadow_evaluation":
-        return router_core.start_shadow(str(arguments["proposal_id"]))
+        return router_core.start_shadow(str(a["proposal_id"]))
     if name == "record_shadow_observation":
-        return router_core.record_shadow_observation(str(arguments["proposal_id"]), bool(arguments["success"]))
+        return router_core.record_shadow_observation(
+            str(a["proposal_id"]), bool(a["success"])
+        )
     if name == "confirm_policy_change":
-        return router_core.confirm_policy_change(str(arguments["proposal_id"]), bool(arguments["confirmed_by_user"]))
+        return router_core.confirm_policy_change(
+            str(a["proposal_id"]), bool(a["confirmed_by_user"])
+        )
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -149,7 +207,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "codex-adaptive-router", "version": "1.0.1"},
+                "serverInfo": {"name": "codex-adaptive-router", "version": "1.1.0"},
             },
         }
     if method == "tools/list":
@@ -157,10 +215,12 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
     if method == "tools/call":
         params = request.get("params") or {}
         try:
-            result = _tool_call(str(params.get("name") or ""), dict(params.get("arguments") or {}))
+            value = _tool_call(
+                str(params.get("name") or ""), dict(params.get("arguments") or {})
+            )
         except (KeyError, TypeError, ValueError, TimeoutError) as error:
             return _error(request_id, -32602, str(error))
-        return {"jsonrpc": "2.0", "id": request_id, "result": _result(result)}
+        return {"jsonrpc": "2.0", "id": request_id, "result": _result(value)}
     return _error(request_id, -32601, f"method not found: {method}")
 
 
@@ -169,9 +229,9 @@ def main() -> int:
         try:
             request = json.loads(raw)
             if not isinstance(request, dict):
-                raise ValueError("MCP request must be an object")
+                raise TypeError("MCP request must be an object")
             response = handle(request)
-        except (ValueError, json.JSONDecodeError) as error:
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
             response = _error(None, -32700, str(error))
         if response is not None:
             sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
