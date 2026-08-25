@@ -17,6 +17,21 @@ import router_mcp
 
 
 class RouterMcpTests(unittest.TestCase):
+    def test_required_evidence_hooks_are_synchronous_for_current_codex(self) -> None:
+        configuration = json.loads(
+            (PLUGIN_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        for event in ("PostToolUse", "SubagentStop", "Stop"):
+            hooks = [
+                hook
+                for registration in configuration["hooks"][event]
+                for hook in registration["hooks"]
+            ]
+            self.assertTrue(hooks, event)
+            for hook in hooks:
+                self.assertEqual(hook["timeout"], 3, event)
+                self.assertNotIn("async", hook, event)
+
     def test_outcome_schema_and_call_support_exceptional_audit_followup(self) -> None:
         reply = router_mcp.handle(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}

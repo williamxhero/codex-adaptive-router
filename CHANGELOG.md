@@ -12,3 +12,4 @@
 - Keep `direct` stages executable as Root Sol Medium and delegate higher-budget Sol decisions to named specialists.
 - Add exceptional-result audit follow-ups, validated stage attribution, verified adjacent-stage handoff metrics, and per-axis fit-rate denominators.
 - Associate privacy-bounded agent lifecycles to uniquely matching required stages without treating subagent stop as objective verification.
+- Run lifecycle/evidence-critical hooks synchronously with a three-second fail-open timeout for Codex 0.147 compatibility.

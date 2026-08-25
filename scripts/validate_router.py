@@ -43,7 +43,22 @@ def main() -> int:
         raise ValueError(
             "adaptive_router MCP server must use plugin-relative working directory"
         )
-    load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
+    hook_configuration = load_json(PLUGIN_ROOT / "hooks" / "hooks.json")
+    registered_hooks = hook_configuration.get("hooks", {})
+    for event in ("PostToolUse", "SubagentStop", "Stop"):
+        hooks = [
+            hook
+            for registration in registered_hooks.get(event, [])
+            for hook in registration.get("hooks", [])
+        ]
+        if not hooks:
+            raise ValueError(f"{event} evidence hook is missing")
+        if any(hook.get("timeout") != 3 for hook in hooks):
+            raise ValueError(f"{event} evidence hooks must use a 3-second timeout")
+        if any("async" in hook for hook in hooks):
+            raise ValueError(
+                f"{event} evidence hooks must be synchronous on current Codex"
+            )
     for profile_name in router_core.available_profiles():
         profile = router_core.load_profile(profile_name)
         if profile.get("schema_version") != 3:

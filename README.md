@@ -61,7 +61,7 @@ User task
   -> Explicit user confirmation activates the new versioned policy
 ```
 
-The hooks fail open: a routing-storage or classification issue never blocks ordinary Codex work.
+The hooks fail open: a routing-storage or classification issue never blocks ordinary Codex work. Codex 0.147 does not execute async hooks, so the lifecycle/evidence-critical `PostToolUse`, `SubagentStop`, and `Stop` hooks run synchronously with a three-second timeout per hook; `router_hook.py` still returns a fail-open response on handled errors.
 
 ### v1.1.1 task-ref/store consistency hotfix
 

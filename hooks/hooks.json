@@ -35,8 +35,7 @@
             "type": "command",
             "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" PostToolUse",
             "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd PostToolUse",
-            "timeout": 3,
-            "async": true
+            "timeout": 3
           }
         ]
       }
@@ -61,8 +60,7 @@
             "type": "command",
             "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" SubagentStop",
             "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd SubagentStop",
-            "timeout": 3,
-            "async": true
+            "timeout": 3
           }
         ]
       }
@@ -74,8 +72,7 @@
             "type": "command",
             "command": "python \"${PLUGIN_ROOT}/scripts/router_hook.py\" Stop",
             "commandWindows": "cmd.exe /d /c %PLUGIN_ROOT%\\scripts\\router-hook.cmd Stop",
-            "timeout": 3,
-            "async": true
+            "timeout": 3
           }
         ]
       }
