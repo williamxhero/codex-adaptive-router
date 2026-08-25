@@ -130,7 +130,7 @@ TOOLS = [
     },
     {
         "name": "record_route_outcome",
-        "description": "Record v1-compatible or rich v2 outcome evidence.",
+        "description": "Record privacy-bounded Outcome Intelligence v3 evidence with independent model, effort, context, and tool-data fit. Failure-axis attribution is checked against the replacement tuple.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -155,6 +155,12 @@ TOOLS = [
                 "replacement_effort": {"type": "string", "enum": EFFORTS},
                 "token_band": {"type": "string", "enum": BANDS},
                 "cost_band": {"type": "string", "enum": BANDS},
+                "stage": {"type": "string", "enum": sorted(router_core.STAGE_NAMES)},
+                "model_fit": {"type": "string", "enum": sorted(router_core.MODEL_EFFORT_FITS)},
+                "effort_fit": {"type": "string", "enum": sorted(router_core.MODEL_EFFORT_FITS)},
+                "context_fit": {"type": "string", "enum": sorted(router_core.CONTEXT_TOOL_FITS)},
+                "tool_data_fit": {"type": "string", "enum": sorted(router_core.CONTEXT_TOOL_FITS)},
+                "failure_axis": {"type": "string", "enum": sorted(router_core.FAILURE_AXES)},
             },
             "required": ["route_id", "status", "confidence"],
             "additionalProperties": False,
@@ -268,6 +274,12 @@ def _tool_call(name: str, a: dict[str, Any]) -> Any:
             replacement_effort=a.get("replacement_effort"),
             token_band=str(a.get("token_band") or "unknown"),
             cost_band=str(a.get("cost_band") or "unknown"),
+            stage=a.get("stage"),
+            model_fit=str(a.get("model_fit") or "unknown"),
+            effort_fit=str(a.get("effort_fit") or "unknown"),
+            context_fit=str(a.get("context_fit") or "unknown"),
+            tool_data_fit=str(a.get("tool_data_fit") or "unknown"),
+            failure_axis=a.get("failure_axis"),
         )
     if name == "router_policy_status":
         return router_core.policy_status()

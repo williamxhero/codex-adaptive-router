@@ -1,4 +1,4 @@
-# Outcome Intelligence v1.1.1
+# Outcome Intelligence v1.2.0
 
 ## Engine seam
 
@@ -17,3 +17,17 @@ The implementation follows the [official OpenAI Hooks documentation](https://lea
 The salt is local-only and generated with restrictive permissions. Persisted evidence is limited to enums, bands, HMACs, IDs, timestamps, counts, and bounded route transitions.
 
 Quality and risk gates precede resource minimization. The incumbent wins evidence ties, and an unexecuted cheaper candidate remains inconclusive. Policy proposals are axis-specific and always require human confirmation.
+
+## Capability-budget attribution
+
+New evidence uses event schema v3; existing v1/v2 evidence is read-only compatible and is never rewritten. Outcomes may identify a route stage and independently classify model fit, effort fit, context fit, and tool-data fit with bounded enums.
+
+- A replacement that keeps role and model fixed and changes only effort may support `reasoning_budget` evidence.
+- A replacement that keeps role and effort fixed and changes only model may support `model_capability` evidence.
+- Multiple changed axes are `confounded`.
+- Deficient context or tool data takes precedence and cannot create model- or effort-axis evidence.
+- Model proposals hold role and effort fixed; effort proposals hold role and model fixed. Below-floor downgrades are invalid.
+
+Metrics normalize mixed v2/v3 history before aggregation. They include task-class/model/effort success, model and effort fit counts, floor violations, decision leakage, mechanical Sol share, stage handoff success, quality-adjusted resource bands, and model-effort comparable counts. All dimensions remain bounded classifications or counts; no raw task content is retained.
+
+Evolution sync emits new batches, manifests, metrics, policies, schemas, and `latest.json` with explicit LF bytes. Previously published CRLF immutable artifacts remain byte-for-byte untouched and continue to participate in their original hash chain.

@@ -34,6 +34,12 @@ OUTCOME_STATUSES = {
 TASK_STATES = {"unknown", "frozen"}
 QUALITY_GATES = {"unknown", "provisional", "passed", "failed"}
 ROUTE_FITS = {"unknown", "adequate", "under_routed", "over_routed"}
+MODEL_EFFORT_FITS = {"under", "adequate", "over", "unknown"}
+CONTEXT_TOOL_FITS = {"adequate", "deficient", "unknown"}
+FAILURE_AXES = {
+    "model_capability", "reasoning_budget", "context", "tool_data",
+    "execution", "none", "confounded",
+}
 BANDS = {"unknown", "low", "medium", "high", "very_high"}
 FEATURE_VALUES = {
     "operation_mode": {
@@ -266,7 +272,8 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         "task_ref", "route_id", "status", "quality_gate", "route_fit", "verification_kinds",
         "confidence", "evidence_source", "objective_verification", "user_confirmed", "replacement",
         "high_risk_regression", "retry_band", "rework_band", "tool_band", "duration_band",
-        "token_band", "cost_band",
+        "token_band", "cost_band", "stage", "model_fit", "effort_fit",
+        "context_fit", "tool_data_fit", "failure_axis",
     }
     if not isinstance(value, dict) or value.get("type") not in {"route", "execution", "outcome"}:
         raise ValueError("evidence event type is invalid")
@@ -275,9 +282,18 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
     legacy_route = route - {
         "plan_version", "capability_floor", "effort_basis", "route_mode", "stages", "capability_exception"
     }
-    required = common - {"dedupe_key"} | ({"route": legacy_route, "execution": {"task_ref", "route_id", "event"}, "outcome": outcome}[event_type])
+    schema_version = value.get("schema_version")
+    legacy_outcome = outcome - {
+        "stage", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis"
+    }
+    payload_required = {
+        "route": route if schema_version == 3 else legacy_route,
+        "execution": {"task_ref", "route_id", "event"},
+        "outcome": outcome - {"stage"} if schema_version == 3 else legacy_outcome,
+    }[event_type]
+    required = common - {"dedupe_key"} | payload_required
     event = _strict_object(value, allowed, required, f"{event_type} event")
-    if event["schema_version"] != 2 or not isinstance(event["sequence"], int) or isinstance(event["sequence"], bool) or event["sequence"] < 1:
+    if event["schema_version"] not in {2, 3} or not isinstance(event["sequence"], int) or isinstance(event["sequence"], bool) or event["sequence"] < 1:
         raise ValueError("evidence sequence/schema is invalid")
     try:
         uuid.UUID(str(event["event_id"]))
@@ -318,6 +334,8 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         if not isinstance(event["policy_revision"], int) or isinstance(event["policy_revision"], bool) or event["policy_revision"] < 1:
             raise ValueError("policy_revision is invalid")
         validate_decision_features(event["decision_features"])
+        if event["schema_version"] == 3 and event["decision_features"].get("feature_version") != 2:
+            raise ValueError("route v3 requires Decision Features v2")
         validate_constraints(event["constraints"])
         if event["shadow"] is not None:
             shadow = _strict_object(event["shadow"], {"proposal_id", "axis", "candidate"}, {"proposal_id", "axis", "candidate"}, "shadow")
@@ -349,6 +367,15 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         _validate_replacement(event["replacement"])
         if any(event[key] not in BANDS for key in ("retry_band", "rework_band", "tool_band", "duration_band", "token_band", "cost_band")):
             raise ValueError("outcome resource band is invalid")
+        if event["schema_version"] == 3:
+            if "stage" in event and event["stage"] not in STAGE_NAMES:
+                raise ValueError("outcome stage is invalid")
+            if event["model_fit"] not in MODEL_EFFORT_FITS or event["effort_fit"] not in MODEL_EFFORT_FITS:
+                raise ValueError("outcome model/effort fit is invalid")
+            if event["context_fit"] not in CONTEXT_TOOL_FITS or event["tool_data_fit"] not in CONTEXT_TOOL_FITS:
+                raise ValueError("outcome context/tool-data fit is invalid")
+            if event["failure_axis"] not in FAILURE_AXES:
+                raise ValueError("outcome failure_axis is invalid")
     return event
 
 
@@ -1432,7 +1459,7 @@ class RouterEngine:
             )
         value = dict(record)
         value.update(
-            schema_version=2,
+            schema_version=3,
             event_id=str(uuid.uuid4()),
             sequence=int(ledger["next_sequence"]),
             created_at=utc_now(),
@@ -1572,6 +1599,11 @@ class RouterEngine:
                 "duration_band": "unknown",
                 "token_band": "unknown",
                 "cost_band": "unknown",
+                "model_fit": "unknown",
+                "effort_fit": "unknown",
+                "context_fit": "unknown",
+                "tool_data_fit": "unknown",
+                "failure_axis": "execution",
             },
             f"followup:{previous['task_ref']}:{label}",
         )
@@ -1965,6 +1997,45 @@ class RouterEngine:
             }.get(str(value), 0)
         return 1
 
+    @staticmethod
+    def _derive_route_fit(model_fit: str, effort_fit: str, fallback: str) -> str:
+        values = {model_fit, effort_fit}
+        if "under" in values:
+            return "under_routed"
+        if "over" in values:
+            return "over_routed"
+        if "adequate" in values:
+            return "adequate"
+        return fallback
+
+    @staticmethod
+    def _derive_failure_axis(
+        route: dict[str, Any],
+        replacement: dict[str, Any] | None,
+        context_fit: str,
+        tool_data_fit: str,
+        status: str,
+    ) -> str:
+        if context_fit == "deficient":
+            return "context"
+        if tool_data_fit == "deficient":
+            return "tool_data"
+        if replacement:
+            changed = {
+                axis
+                for axis in ("role", "model", "reasoning_effort")
+                if str(route.get(axis)) != str(replacement.get(axis))
+            }
+            if changed == {"reasoning_effort"}:
+                return "reasoning_budget"
+            if changed == {"model"}:
+                return "model_capability"
+            if len(changed) > 1:
+                return "confounded"
+            if changed:
+                return "execution"
+        return "execution" if status in {"failed", "corrected"} else "none"
+
     def finalize_task(
         self,
         task_ref: str,
@@ -1983,6 +2054,12 @@ class RouterEngine:
         token_band: str = "unknown",
         cost_band: str = "unknown",
         high_risk_regression: bool = False,
+        stage: str | None = None,
+        model_fit: str = "unknown",
+        effort_fit: str = "unknown",
+        context_fit: str = "unknown",
+        tool_data_fit: str = "unknown",
+        failure_axis: str | None = None,
     ) -> dict[str, Any]:
         if (
             status not in OUTCOME_STATUSES
@@ -1994,6 +2071,14 @@ class RouterEngine:
             raise ValueError("confidence must be between 0 and 1")
         if token_band not in BANDS or cost_band not in BANDS:
             raise ValueError("invalid resource band")
+        if stage is not None and stage not in STAGE_NAMES:
+            raise ValueError("invalid outcome stage")
+        if model_fit not in MODEL_EFFORT_FITS or effort_fit not in MODEL_EFFORT_FITS:
+            raise ValueError("invalid model/effort fit")
+        if context_fit not in CONTEXT_TOOL_FITS or tool_data_fit not in CONTEXT_TOOL_FITS:
+            raise ValueError("invalid context/tool-data fit")
+        if failure_axis is not None and failure_axis not in FAILURE_AXES:
+            raise ValueError("invalid failure axis")
         values = (replacement_role, replacement_model, replacement_effort)
         if any(x is not None for x in values) and not all(
             x is not None for x in values
@@ -2021,6 +2106,17 @@ class RouterEngine:
                 if replacement_role
                 else None
             )
+            route_fit = self._derive_route_fit(model_fit, effort_fit, route_fit)
+            derived_axis = self._derive_failure_axis(
+                task["route"], replacement, context_fit, tool_data_fit, status
+            )
+            if failure_axis is not None and derived_axis in {
+                "model_capability", "reasoning_budget", "context", "tool_data", "confounded"
+            } and failure_axis != derived_axis:
+                raise ValueError(
+                    f"failure_axis {failure_axis} conflicts with derived {derived_axis}"
+                )
+            failure_axis = failure_axis or derived_axis
             duration = max(
                 0,
                 time.time()
@@ -2050,11 +2146,18 @@ class RouterEngine:
                 "duration_band": self._duration_band(duration),
                 "token_band": token_band,
                 "cost_band": cost_band,
+                "model_fit": model_fit,
+                "effort_fit": effort_fit,
+                "context_fit": context_fit,
+                "tool_data_fit": tool_data_fit,
+                "failure_axis": failure_axis,
             }
+            if stage is not None:
+                outcome["stage"] = stage
             record = self._append(
                 ledger,
                 outcome,
-                f"outcome:{task_ref}:{status}:{quality_gate}:{route_fit}",
+                f"outcome:{task_ref}:{status}:{quality_gate}:{route_fit}:{stage or 'all'}:{failure_axis}",
             )
             task["status"] = "provisional" if quality_gate == "provisional" else status
             task["finalized_at"] = utc_now()
@@ -2074,6 +2177,12 @@ class RouterEngine:
         replacement = outcome.get("replacement") or {}
         actual = task["route"].get(axis)
         if (
+            outcome.get("failure_axis") in {"confounded", "context", "tool_data"}
+            or outcome.get("context_fit") == "deficient"
+            or outcome.get("tool_data_fit") == "deficient"
+        ):
+            result = "inconclusive"
+        elif (
             outcome.get("route_fit") in {"under_routed", "over_routed"}
             and replacement.get(axis) == candidate
         ):
@@ -2208,6 +2317,12 @@ def record_outcome(
     token_band: str = "unknown",
     cost_band: str = "unknown",
     high_risk_regression: bool = False,
+    stage: str | None = None,
+    model_fit: str = "unknown",
+    effort_fit: str = "unknown",
+    context_fit: str = "unknown",
+    tool_data_fit: str = "unknown",
+    failure_axis: str | None = None,
     root: Path | None = None,
 ) -> dict[str, Any]:
     routes, _ = _events_by_type(root)
@@ -2230,6 +2345,12 @@ def record_outcome(
         token_band=token_band,
         cost_band=cost_band,
         high_risk_regression=high_risk_regression,
+        stage=stage,
+        model_fit=model_fit,
+        effort_fit=effort_fit,
+        context_fit=context_fit,
+        tool_data_fit=tool_data_fit,
+        failure_axis=failure_axis,
     )
 
 
@@ -2270,6 +2391,15 @@ def learning_proposals(root: Path | None = None) -> list[dict[str, Any]]:
             if axis == "reasoning_effort" and changed_axes != {"reasoning_effort"}:
                 continue
             if axis == "role" and "role" not in changed_axes:
+                continue
+            failure_axis = outcome.get("failure_axis")
+            if failure_axis in {"confounded", "context", "tool_data"}:
+                continue
+            if outcome.get("context_fit") == "deficient" or outcome.get("tool_data_fit") == "deficient":
+                continue
+            if axis == "model" and failure_axis not in {None, "model_capability", "none"}:
+                continue
+            if axis == "reasoning_effort" and failure_axis not in {None, "reasoning_budget", "none"}:
                 continue
             profile_config = load_profile(str(route.get("profile")))
             try:
@@ -2504,8 +2634,55 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
         }
         for band in BANDS
     }
+    success_by_tuple: dict[str, dict[str, Any]] = {}
+    interaction: dict[str, int] = {}
+    for route_id, outcome in latest.items():
+        route = routes.get(route_id)
+        if not route or outcome.get("quality_gate") not in {"passed", "failed"}:
+            continue
+        key = "|".join(
+            str(route.get(field) or "unknown")
+            for field in ("task_class", "model", "reasoning_effort")
+        )
+        item = success_by_tuple.setdefault(key, {"passed": 0, "total": 0, "rate": None})
+        item["total"] += 1
+        item["passed"] += int(outcome.get("quality_gate") == "passed")
+        interaction["|".join(key.split("|")[1:])] = interaction.get(
+            "|".join(key.split("|")[1:]), 0
+        ) + 1
+    for item in success_by_tuple.values():
+        item["rate"] = round(item["passed"] / item["total"], 4)
+    model_fit_counts = {
+        fit: sum(outcome.get("model_fit") == fit for outcome in latest.values())
+        for fit in MODEL_EFFORT_FITS
+    }
+    effort_fit_counts = {
+        fit: sum(outcome.get("effort_fit") == fit for outcome in latest.values())
+        for fit in MODEL_EFFORT_FITS
+    }
+    floor_violations = 0
+    decision_leakage = 0
+    mechanical = []
+    staged_known = []
+    for route_id, route in routes.items():
+        floor = route.get("capability_floor")
+        if floor in MODEL_ORDER and MODEL_ORDER.get(str(route.get("model")), 0) < MODEL_ORDER[floor]:
+            floor_violations += 1
+        for stage in route.get("stages") or []:
+            authority = stage.get("authority")
+            expected = AUTHORITY_FLOORS.get(str(authority))
+            if expected and MODEL_ORDER.get(str(stage.get("model")), 0) < MODEL_ORDER[expected]:
+                floor_violations += 1
+            if authority in {"decision", "audit"} and stage.get("model") != "gpt-5.6-sol":
+                decision_leakage += 1
+        features = route.get("decision_features") or {}
+        if features.get("cognitive_type") == "direct" and features.get("scope") == "tiny":
+            mechanical.append(route)
+        if route.get("route_mode") == "staged" and route_id in latest and latest[route_id].get("quality_gate") in {"passed", "failed"}:
+            staged_known.append(latest[route_id])
+    handoff_passed = sum(item.get("quality_gate") == "passed" for item in staged_known)
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "capture_coverage": round(len(latest) / len(routes), 4) if routes else 0.0,
         "known_quality_coverage": round(total / len(routes), 4) if routes else 0.0,
         "route_success": round(success / total, 4) if total else None,
@@ -2518,6 +2695,23 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
         "brier_score": round(sum(brier) / len(brier), 4) if brier else None,
         "calibration_buckets": buckets,
         "equal_quality_resource_bands": resources,
+        "task_class_model_effort_success": success_by_tuple,
+        "model_fit_counts": model_fit_counts,
+        "effort_fit_counts": effort_fit_counts,
+        "floor_violations": floor_violations,
+        "decision_leakage": decision_leakage,
+        "mechanical_sol_share": (
+            round(sum(item.get("model") == "gpt-5.6-sol" for item in mechanical) / len(mechanical), 4)
+            if mechanical
+            else None
+        ),
+        "stage_handoff_success": {
+            "passed": handoff_passed,
+            "total": len(staged_known),
+            "rate": round(handoff_passed / len(staged_known), 4) if staged_known else None,
+        },
+        "quality_adjusted_resource_bands": resources,
+        "model_effort_interaction_comparable": interaction,
         "routes": len(routes),
         "outcomes": len(outcomes),
     }

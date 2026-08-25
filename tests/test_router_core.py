@@ -449,6 +449,118 @@ class EngineTests(unittest.TestCase):
 
 
 class IntelligenceTests(unittest.TestCase):
+    def test_outcome_v3_derives_single_axis_and_confounded_failure_axes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            effort_plan = router_core.make_route_plan(
+                "Implement from frozen spec", task_state="frozen", root=root
+            )
+            router_core.create_route_record(effort_plan, "task", root=root)
+            effort = router_core.record_outcome(
+                effort_plan.route_id,
+                "escalated",
+                confidence=0.9,
+                verified=True,
+                model_fit="adequate",
+                effort_fit="under",
+                context_fit="adequate",
+                tool_data_fit="adequate",
+                replacement_role=effort_plan.role,
+                replacement_model=effort_plan.model,
+                replacement_effort="xhigh",
+                root=root,
+            )
+            self.assertEqual(effort["schema_version"], 3)
+            self.assertEqual(effort["failure_axis"], "reasoning_budget")
+            self.assertEqual(effort["route_fit"], "under_routed")
+
+            model_plan = router_core.make_route_plan(
+                "Search code", route_id=None, root=root
+            )
+            router_core.create_route_record(model_plan, "task2", root=root)
+            model = router_core.record_outcome(
+                model_plan.route_id,
+                "escalated",
+                confidence=0.9,
+                model_fit="under",
+                effort_fit="adequate",
+                replacement_role=model_plan.role,
+                replacement_model="gpt-5.6-terra",
+                replacement_effort=model_plan.reasoning_effort,
+                root=root,
+            )
+            self.assertEqual(model["failure_axis"], "model_capability")
+
+            mixed_plan = router_core.make_route_plan(
+                "Search code for refs", root=root
+            )
+            router_core.create_route_record(mixed_plan, "task3", root=root)
+            mixed = router_core.record_outcome(
+                mixed_plan.route_id,
+                "escalated",
+                confidence=0.9,
+                model_fit="under",
+                effort_fit="under",
+                replacement_role=mixed_plan.role,
+                replacement_model="gpt-5.6-terra",
+                replacement_effort="high",
+                root=root,
+            )
+            self.assertEqual(mixed["failure_axis"], "confounded")
+
+            context_plan = router_core.make_route_plan("Search code", root=root)
+            router_core.create_route_record(context_plan, "task4", root=root)
+            context = router_core.record_outcome(
+                context_plan.route_id,
+                "failed",
+                confidence=0.9,
+                model_fit="under",
+                effort_fit="under",
+                context_fit="deficient",
+                replacement_role=context_plan.role,
+                replacement_model="gpt-5.6-terra",
+                replacement_effort="high",
+                root=root,
+            )
+            self.assertEqual(context["failure_axis"], "context")
+
+    def test_v2_and_v3_evidence_validate_together_and_metrics_expand(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = router_core.RouterEngine(root)
+            task = engine.begin_task(session_id="s", turn_id="t", prompt="Search code")
+            outcome = engine.finalize_task(
+                task["task_ref"],
+                quality_gate="passed",
+                verified=True,
+                confidence=0.9,
+                model_fit="adequate",
+                effort_fit="adequate",
+                context_fit="adequate",
+                tool_data_fit="adequate",
+            )
+            self.assertTrue(all(event["schema_version"] == 3 for event in router_core._all_events(root)))
+            legacy = json.loads(json.dumps(outcome))
+            legacy["schema_version"] = 2
+            for field in (
+                "stage", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis"
+            ):
+                legacy.pop(field, None)
+            router_core.validate_evidence_event(legacy)
+            metrics = router_core.router_metrics(root)
+            for key in (
+                "task_class_model_effort_success",
+                "model_fit_counts",
+                "effort_fit_counts",
+                "floor_violations",
+                "decision_leakage",
+                "mechanical_sol_share",
+                "stage_handoff_success",
+                "quality_adjusted_resource_bands",
+                "model_effort_interaction_comparable",
+            ):
+                self.assertIn(key, metrics)
+
     def _evidence(self, root: Path, count: int = 5):
         for i in range(count):
             plan = router_core.make_route_plan(
@@ -470,9 +582,11 @@ class IntelligenceTests(unittest.TestCase):
                 route_fit="under_routed",
                 objective_verification=True,
                 user_confirmed=True,
-                replacement_role="router_researcher",
-                replacement_model="gpt-5.6-sol",
-                replacement_effort="high",
+                model_fit="adequate",
+                effort_fit="under",
+                replacement_role=plan.role,
+                replacement_model=plan.model,
+                replacement_effort="xhigh",
                 root=root,
             )
 
@@ -481,7 +595,7 @@ class IntelligenceTests(unittest.TestCase):
             root = Path(d)
             self._evidence(root)
             proposals = router_core.learning_proposals(root)
-            self.assertEqual({x["axis"] for x in proposals}, {"role"})
+            self.assertEqual({x["axis"] for x in proposals}, {"reasoning_effort"})
             self.assertTrue(all(x["status"] == "ready_for_shadow" for x in proposals))
             metrics = router_core.router_metrics(root)
             self.assertEqual(metrics["route_success"], 1.0)
@@ -510,16 +624,18 @@ class IntelligenceTests(unittest.TestCase):
                     verified=True,
                     objective_verification=True,
                     user_confirmed=True,
-                    replacement_role="router_researcher",
-                    replacement_model="gpt-5.6-sol",
-                    replacement_effort="high",
+                    model_fit="adequate",
+                    effort_fit="under",
+                    replacement_role=task["route"]["role"],
+                    replacement_model=task["route"]["model"],
+                    replacement_effort="xhigh",
                 )
             with self.assertRaises(ValueError):
                 router_core.confirm_policy_change(proposal["proposal_id"], False, root)
             override = router_core.confirm_policy_change(
                 proposal["proposal_id"], True, root
             )
-            self.assertEqual(override["axis"], "role")
+            self.assertEqual(override["axis"], "reasoning_effort")
 
     def test_legacy_manual_shadow_observations_never_make_proposal_ready(self):
         with tempfile.TemporaryDirectory() as d:
@@ -582,9 +698,11 @@ class IntelligenceTests(unittest.TestCase):
                     objective_verification=True,
                     user_confirmed=True,
                     high_risk_regression=i == 0,
-                    replacement_role="router_researcher",
-                    replacement_model="gpt-5.6-sol",
-                    replacement_effort="high",
+                    model_fit="adequate",
+                    effort_fit="under",
+                    replacement_role=plan.role,
+                    replacement_model=plan.model,
+                    replacement_effort="xhigh",
                     root=root,
                 )
             self.assertTrue(

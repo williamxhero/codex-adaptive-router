@@ -15,6 +15,33 @@ import validate_evolution
 
 
 class SyncTests(unittest.TestCase):
+    def test_v2_v3_mixed_history_and_future_lf_preserve_legacy_crlf_bytes(self):
+        with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as repo:
+            root = Path(data)
+            target = Path(repo)
+            engine = router_core.RouterEngine(root)
+            engine.begin_task(session_id="s", turn_id="t", prompt="Search code")
+            v3 = router_core._all_events(root)[0]
+            v2 = json.loads(json.dumps(v3))
+            v2["schema_version"] = 2
+            v2["event_id"] = "00000000-0000-4000-8000-000000000002"
+            v2["route_id"] = "00000000-0000-4000-8000-000000000003"
+            source = root / "events" / "routing.jsonl"
+            source.write_text(
+                json.dumps(v2, sort_keys=True) + "\n" + json.dumps(v3, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            sync_evolution_data.write_export(root, root / "other", target)
+            validate_evolution.validate(target)
+            batch = next((target / "evolution-data" / "batches").glob("*.jsonl"))
+            self.assertNotIn(b"\r\n", batch.read_bytes())
+
+            legacy = target / "legacy-crlf.jsonl"
+            legacy.write_bytes(b'{"schema_version":2}\r\n')
+            before = legacy.read_bytes()
+            sync_evolution_data._write_new(legacy, '{"schema_version":2}\n')
+            self.assertEqual(legacy.read_bytes(), before)
+
     def test_real_v1_input_is_deterministically_migrated_without_rewrite(self):
         with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as repo:
             root = Path(data)

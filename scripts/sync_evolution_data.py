@@ -1,4 +1,4 @@
-"""Fail-closed immutable GitHub evolution export for Adaptive Router v1.1."""
+"""Fail-closed immutable GitHub evolution export for Adaptive Router v1.2."""
 
 from __future__ import annotations
 
@@ -99,13 +99,13 @@ def _legacy_route_tuple(record: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def migrate_event(record: dict[str, Any]) -> dict[str, Any]:
-    """Return a strict, deterministic v2 upload record without mutating v1 input."""
-    if record.get("schema_version") == 2:
+    """Return strict v2/v3 upload evidence without mutating source history."""
+    if record.get("schema_version") in {2, 3}:
         value = json.loads(json.dumps(record))
         try:
             router_core.validate_evidence_event(value)
         except ValueError as error:
-            raise SyncError(f"invalid v2 evidence: {error}") from error
+            raise SyncError(f"invalid v{record.get('schema_version')} evidence: {error}") from error
         assert_safe(value)
         return value
     if record.get("schema_version") not in {None, 1}:
@@ -261,11 +261,28 @@ def sha256(path: Path) -> str:
 
 def _write_new(path: Path, data: str) -> None:
     if path.exists():
-        if path.read_text(encoding="utf-8") != data:
+        existing = path.read_bytes()
+        if existing.decode("utf-8").replace("\r\n", "\n") != data:
             raise SyncError(f"immutable artifact differs: {path.name}")
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(data, encoding="utf-8")
+    path.write_bytes(data.encode("utf-8"))
+
+
+def _write_lf(path: Path, data: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data.encode("utf-8"))
+
+
+def _normalise_metrics_event(record: dict[str, Any]) -> dict[str, Any]:
+    value = json.loads(json.dumps(record))
+    if value.get("type") == "outcome":
+        value.setdefault("model_fit", "unknown")
+        value.setdefault("effort_fit", "unknown")
+        value.setdefault("context_fit", "unknown")
+        value.setdefault("tool_data_fit", "unknown")
+        value.setdefault("failure_axis", "none")
+    return value
 
 
 def write_export(router_data_root: Path, hook_data_root: Path, repository: Path) -> int:
@@ -279,6 +296,12 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
     _write_new(
         target / "schemas" / "event-v2.schema.json",
         (PLUGIN_ROOT / "evolution-data" / "schemas" / "event-v2.schema.json").read_text(
+            encoding="utf-8"
+        ),
+    )
+    _write_new(
+        target / "schemas" / "event-v3.schema.json",
+        (PLUGIN_ROOT / "evolution-data" / "schemas" / "event-v3.schema.json").read_text(
             encoding="utf-8"
         ),
     )
@@ -303,7 +326,7 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
         batch_path = target / "batches" / batch_name
         _write_new(batch_path, rendered_batch)
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "batch": batch_name,
             "count": len(fresh),
             "sha256": sha256(batch_path),
@@ -332,9 +355,12 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
         metrics_root = Path(directory)
         metrics_events = metrics_root / "events" / "routing.jsonl"
         metrics_events.parent.mkdir(parents=True)
-        metrics_events.write_text(
-            "".join(json.dumps(item, sort_keys=True) + "\n" for item in records),
-            encoding="utf-8",
+        _write_lf(
+            metrics_events,
+            "".join(
+                json.dumps(_normalise_metrics_event(item), sort_keys=True) + "\n"
+                for item in records
+            ),
         )
         metrics = router_core.router_metrics(metrics_root)
     rendered_metrics = json.dumps(metrics, indent=2, sort_keys=True) + "\n"
@@ -361,16 +387,14 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
             target / "metrics" / f"revision-{metrics_revision}.json", rendered_metrics
         )
     latest_value = {
-        "schema_version": 2,
+        "schema_version": 3,
         "policy_revision": revision,
         "metrics_revision": metrics_revision,
         "manifest": manifest_name or read_json(latest, {}).get("manifest"),
         "manifest_sha256": previous,
         "event_count": len(records),
     }
-    latest.write_text(
-        json.dumps(latest_value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    _write_lf(latest, json.dumps(latest_value, indent=2, sort_keys=True) + "\n")
     return len(records)
 
 

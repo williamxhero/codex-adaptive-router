@@ -31,6 +31,11 @@ def validate(root: Path, base_ref: str | None = None) -> None:
     )
     if schema.get("properties", {}).get("schema_version", {}).get("const") != 2 or schema.get("additionalProperties") is not False:
         fail("event v2 schema is invalid")
+    schema_v3 = json.loads(
+        (target / "schemas" / "event-v3.schema.json").read_text(encoding="utf-8")
+    )
+    if schema_v3.get("properties", {}).get("schema_version", {}).get("const") != 3 or schema_v3.get("additionalProperties") is not False:
+        fail("event v3 schema is invalid")
     ids = set()
     events = []
     manifest_paths = (
@@ -57,7 +62,7 @@ def validate(root: Path, base_ref: str | None = None) -> None:
     for manifest_path in reversed(ordered):
         manifest = json.loads(manifest_path.read_text())
         batch = target / "batches" / manifest["batch"]
-        if manifest.get("schema_version") != 2 or manifest.get("count") != len(
+        if manifest.get("schema_version") not in {2, 3} or manifest.get("count") != len(
             sync_evolution_data.read_jsonl(batch)
         ):
             fail("manifest schema/count mismatch")
@@ -68,7 +73,7 @@ def validate(root: Path, base_ref: str | None = None) -> None:
             try:
                 router_core.validate_evidence_event(event)
             except ValueError as error:
-                fail(f"invalid event v2: {error}")
+                fail(f"invalid event v{event.get('schema_version')}: {error}")
             if event["event_id"] in ids:
                 fail("duplicate event id")
             ids.add(event["event_id"])
@@ -93,9 +98,12 @@ def validate(root: Path, base_ref: str | None = None) -> None:
             data_root = Path(directory)
             event_path = data_root / "events" / "routing.jsonl"
             event_path.parent.mkdir(parents=True)
-            event_path.write_text(
-                "".join(json.dumps(item, sort_keys=True) + "\n" for item in events),
-                encoding="utf-8",
+            sync_evolution_data._write_lf(
+                event_path,
+                "".join(
+                    json.dumps(sync_evolution_data._normalise_metrics_event(item), sort_keys=True) + "\n"
+                    for item in events
+                ),
             )
             recomputed = router_core.router_metrics(data_root)
         latest_metrics = json.loads(
@@ -103,6 +111,11 @@ def validate(root: Path, base_ref: str | None = None) -> None:
                 encoding="utf-8"
             )
         )
+        if latest_metrics.get("schema_version") == 2:
+            recomputed = {
+                key: (2 if key == "schema_version" else recomputed.get(key))
+                for key in latest_metrics
+            }
         if recomputed != latest_metrics:
             fail("metrics artifact is not reproducible from immutable events")
     if base_ref:
