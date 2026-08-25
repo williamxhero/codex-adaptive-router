@@ -1,8 +1,8 @@
 {
-  "event_count": 1946,
-  "manifest": "manifest-5ead03ff04456fe3820eb6f460ace4e63b132c48e35ff8957596c8c4eff1123c.json",
-  "manifest_sha256": "ebecd615d06585a6a8e66fa059fe22b272c032b865889888412ad9c16ab4ee13",
-  "metrics_revision": 1,
+  "event_count": 4297,
+  "manifest": "manifest-dc5505efce75bf3e52d1011f99a7bc05e35b02c3074f6ea4946351df92444a66.json",
+  "manifest_sha256": "8acc449d7477983493953159b6b81548875f8690631903ef344f98c100679379",
+  "metrics_revision": 2,
   "policy_revision": 1,
   "schema_version": 2
 }

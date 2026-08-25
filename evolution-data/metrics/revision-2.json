@@ -1,0 +1,102 @@
+{
+  "brier_score": 0.0845,
+  "calibration_buckets": {
+    "0.0-0.1": {
+      "count": 0,
+      "observed": 0.0,
+      "predicted": 0.0
+    },
+    "0.1-0.2": {
+      "count": 0,
+      "observed": 0.0,
+      "predicted": 0.0
+    },
+    "0.2-0.3": {
+      "count": 0,
+      "observed": 0.0,
+      "predicted": 0.0
+    },
+    "0.3-0.4": {
+      "count": 0,
+      "observed": 0.0,
+      "predicted": 0.0
+    },
+    "0.4-0.5": {
+      "count": 0,
+      "observed": 0.0,
+      "predicted": 0.0
+    },
+    "0.5-0.6": {
+      "count": 5,
+      "observed": 1.0,
+      "predicted": 0.58
+    },
+    "0.6-0.7": {
+      "count": 2,
+      "observed": 1.0,
+      "predicted": 0.66
+    },
+    "0.7-0.8": {
+      "count": 11,
+      "observed": 0.909,
+      "predicted": 0.72
+    },
+    "0.8-0.9": {
+      "count": 9,
+      "observed": 0.889,
+      "predicted": 0.858
+    },
+    "0.9-1.0": {
+      "count": 13,
+      "observed": 1.0,
+      "predicted": 0.943
+    }
+  },
+  "capture_coverage": 0.6447,
+  "correction_rate": 0.0,
+  "equal_quality_resource_bands": {
+    "high": {
+      "cost": 3,
+      "duration": 8,
+      "token": 9,
+      "tool": 0
+    },
+    "low": {
+      "cost": 6,
+      "duration": 1,
+      "token": 2,
+      "tool": 21
+    },
+    "medium": {
+      "cost": 11,
+      "duration": 11,
+      "token": 9,
+      "tool": 0
+    },
+    "unknown": {
+      "cost": 18,
+      "duration": 17,
+      "token": 18,
+      "tool": 17
+    },
+    "very_high": {
+      "cost": 0,
+      "duration": 1,
+      "token": 0,
+      "tool": 0
+    }
+  },
+  "escalation_rate": 0.0,
+  "known_quality_coverage": 0.1754,
+  "outcomes": 148,
+  "over_routing_rate": 0.025,
+  "route_success": 0.95,
+  "route_success_wilson_95": {
+    "high": 0.9862,
+    "low": 0.835
+  },
+  "routes": 228,
+  "schema_version": 2,
+  "under_routing_rate": 0.025,
+  "unnecessary_sol_xhigh": 0
+}
