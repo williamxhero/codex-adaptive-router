@@ -1192,7 +1192,9 @@ def _stage(
         raise ValueError(f"role {role} cannot hold {authority} authority")
     model = str(config["default_model"])
     effort, _ = _clamp_effort(effort, config)
-    _validate_route_tuple(loaded, role, model, effort)
+    _validate_route_tuple(
+        loaded, role, model, effort, explicit_effort=effort in {"max", "ultra"}
+    )
     return {
         "stage": stage,
         "authority": authority,
