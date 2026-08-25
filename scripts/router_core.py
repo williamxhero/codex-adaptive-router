@@ -33,6 +33,32 @@ OUTCOME_STATUSES = {
     "overridden",
 }
 TASK_STATES = {"unknown", "frozen"}
+EXECUTION_TARGETS = {"direct", "subagent", "visible_task"}
+EXECUTION_MODES = {"root", "delegated", "isolated"}
+DISPATCH_BLOCKERS = {
+    "none",
+    "worker_unavailable",
+    "visible_task_unavailable",
+    "quality_floor_requires_specialist",
+    "delegation_depth_exceeded",
+    "parent_lease_required",
+    "parent_lease_inactive",
+    "read_only_concurrency_exceeded",
+    "writer_lease_conflict",
+    "independent_read_only_not_declared",
+    "duplicate_independence_key",
+    "visible_task_root_only",
+    "visible_task_title_invalid",
+}
+WRITER_MODES = {"read_only", "single_writer"}
+LEASE_STATUSES = {"active", "completed", "failed", "frozen", "released"}
+BOUNDARY_STATUSES = {"unknown", "passed", "failed"}
+SCOPE_STATUSES = {"unknown", "passed", "failed"}
+VERIFICATION_STATUSES = {"unknown", "provisional", "passed", "failed"}
+ARCHIVE_STATUSES = {
+    "not_applicable", "not_ready", "eligible", "requested", "archived", "failed"
+}
+PLAN_MATCHES = {"unknown", "matched", "deviated"}
 QUALITY_GATES = {"unknown", "provisional", "passed", "failed"}
 ROUTE_FITS = {"unknown", "adequate", "under_routed", "over_routed"}
 MODEL_EFFORT_FITS = {"under", "adequate", "over", "unknown"}
@@ -121,10 +147,16 @@ VALID_ROLES = {
     "router_experiment_runner",
     "router_research_engineer",
     "router_researcher",
+    "router_quant_researcher",
     "router_architect",
     "router_adversarial_auditor",
     "router_strategy_scout",
 }
+MAX_DELEGATION_DEPTH = 2
+MAX_READ_ONLY_CHILDREN = 3
+VISIBLE_TASK_TITLE = re.compile(
+    r"^\[AR\]\[(SOL|TERRA|LUNA)-(LOW|MEDIUM|HIGH|XHIGH|MAX|ULTRA)\] .{1,80}$"
+)
 VERIFICATION_KINDS = {"tests", "build", "static_validation", "review"}
 HOOK_EVENTS = {
     "PostToolUse",
@@ -134,6 +166,7 @@ HOOK_EVENTS = {
     "UserPromptSubmit",
     "Stop",
     "SessionEnd",
+    "ArchiveObserved",
 }
 HEX_ID = re.compile(r"^[0-9a-f]{24,64}$")
 DEDUPE_ID = re.compile(r"^[A-Za-z0-9:._-]{1,180}$")
@@ -166,6 +199,62 @@ def validate_constraints(value: Any) -> dict[str, Any]:
     if "no_delegation" in constraints and type(constraints["no_delegation"]) is not bool:
         raise ValueError("constraints.no_delegation must be boolean")
     return dict(constraints)
+
+
+def validate_routing_context(value: Any) -> dict[str, Any]:
+    context = _strict_object(
+        value or {},
+        {
+            "delegation_depth",
+            "caller_is_root",
+            "worker_available",
+            "visible_task_available",
+            "context_isolation_required",
+            "cross_project",
+            "long_running",
+            "writer_required",
+            "estimated_direct_tokens",
+            "estimated_worker_tokens",
+            "estimated_handoff_tokens",
+            "estimated_acceptance_tokens",
+            "parent_lease_id",
+            "independent_read_only_count",
+        },
+        set(),
+        "routing_context",
+    )
+    depth = context.get("delegation_depth", 0)
+    if not isinstance(depth, int) or isinstance(depth, bool) or not 0 <= depth <= MAX_DELEGATION_DEPTH:
+        raise ValueError("routing_context.delegation_depth must be between 0 and 2")
+    for key in (
+        "caller_is_root", "worker_available", "visible_task_available",
+        "context_isolation_required", "cross_project", "long_running", "writer_required",
+    ):
+        if key in context and type(context[key]) is not bool:
+            raise ValueError(f"routing_context.{key} must be boolean")
+    for key in (
+        "estimated_direct_tokens", "estimated_worker_tokens",
+        "estimated_handoff_tokens", "estimated_acceptance_tokens",
+    ):
+        if key in context and (
+            not isinstance(context[key], int)
+            or isinstance(context[key], bool)
+            or context[key] < 0
+        ):
+            raise ValueError(f"routing_context.{key} must be a non-negative integer")
+    parent = context.get("parent_lease_id")
+    if parent is not None and (
+        not isinstance(parent, str) or not HEX_ID.fullmatch(parent)
+    ):
+        raise ValueError("routing_context.parent_lease_id is invalid")
+    independent_count = context.get("independent_read_only_count", 1)
+    if (
+        not isinstance(independent_count, int)
+        or isinstance(independent_count, bool)
+        or not 1 <= independent_count <= MAX_READ_ONLY_CHILDREN
+    ):
+        raise ValueError("routing_context.independent_read_only_count must be between 1 and 3")
+    return dict(context)
 
 
 def validate_decision_features(value: Any) -> dict[str, Any]:
@@ -207,7 +296,10 @@ def validate_decision_features(value: Any) -> dict[str, Any]:
 
 def _validate_transition(value: Any) -> None:
     transition = _strict_object(
-        value, {"phase", "role", "model", "reasoning_effort", "stage"},
+        value, {
+            "phase", "role", "model", "reasoning_effort", "stage",
+            "execution_target", "delegation_depth", "lease_id", "writer_mode",
+        },
         {"phase", "role", "model", "reasoning_effort"}, "transition"
     )
     if transition["phase"] not in {"start", "stop"}:
@@ -220,6 +312,20 @@ def _validate_transition(value: Any) -> None:
         raise ValueError("transition.reasoning_effort is invalid")
     if "stage" in transition and transition["stage"] not in STAGE_NAMES | {"unknown"}:
         raise ValueError("transition.stage is invalid")
+    if "execution_target" in transition and transition["execution_target"] not in EXECUTION_TARGETS:
+        raise ValueError("transition.execution_target is invalid")
+    if "delegation_depth" in transition and (
+        not isinstance(transition["delegation_depth"], int)
+        or isinstance(transition["delegation_depth"], bool)
+        or not 0 <= transition["delegation_depth"] <= MAX_DELEGATION_DEPTH
+    ):
+        raise ValueError("transition.delegation_depth is invalid")
+    if "lease_id" in transition and (
+        not isinstance(transition["lease_id"], str) or not HEX_ID.fullmatch(transition["lease_id"])
+    ):
+        raise ValueError("transition.lease_id is invalid")
+    if "writer_mode" in transition and transition["writer_mode"] not in WRITER_MODES:
+        raise ValueError("transition.writer_mode is invalid")
 
 
 def _validate_replacement(value: Any) -> None:
@@ -232,11 +338,22 @@ def _validate_replacement(value: Any) -> None:
         raise ValueError("replacement route is invalid")
 
 
-def _validate_stage(value: Any) -> None:
+def _validate_stage(value: Any, *, v4: bool = False) -> None:
+    v4_fields = {
+        "execution_target", "execution_mode", "delegation_depth",
+        "writer_mode", "access_mode", "lease_required", "stage_id", "attempt",
+        "parallelism", "parallel_limit",
+    }
     stage = _strict_object(
         value,
-        {"stage", "authority", "role", "capability_floor", "model", "reasoning_effort", "required"},
-        {"stage", "authority", "role", "capability_floor", "model", "reasoning_effort", "required"},
+        {
+            "stage", "authority", "role", "capability_floor", "model",
+            "reasoning_effort", "required",
+        } | (v4_fields if v4 else set()),
+        {
+            "stage", "authority", "role", "capability_floor", "model",
+            "reasoning_effort", "required",
+        } | (v4_fields if v4 else set()),
         "route stage",
     )
     if stage["stage"] not in STAGE_NAMES or stage["authority"] not in AUTHORITIES:
@@ -253,6 +370,78 @@ def _validate_stage(value: Any) -> None:
         raise ValueError("route stage violates capability floor")
     if stage["reasoning_effort"] not in VALID_EFFORTS or type(stage["required"]) is not bool:
         raise ValueError("route stage effort/required is invalid")
+    if v4:
+        if stage["execution_target"] not in EXECUTION_TARGETS:
+            raise ValueError("route stage execution_target is invalid")
+        if stage["execution_mode"] not in EXECUTION_MODES:
+            raise ValueError("route stage execution_mode is invalid")
+        if (
+            not isinstance(stage["delegation_depth"], int)
+            or isinstance(stage["delegation_depth"], bool)
+            or not 0 <= stage["delegation_depth"] <= MAX_DELEGATION_DEPTH
+        ):
+            raise ValueError("route stage delegation_depth is invalid")
+        if stage["writer_mode"] not in WRITER_MODES or type(stage["lease_required"]) is not bool:
+            raise ValueError("route stage writer/lease contract is invalid")
+        if stage["access_mode"] not in {"read_only", "writer"}:
+            raise ValueError("route stage access_mode is invalid")
+        if stage["parallelism"] not in {"serial", "independent_read_only"}:
+            raise ValueError("route stage parallelism is invalid")
+        if (
+            not isinstance(stage["parallel_limit"], int)
+            or isinstance(stage["parallel_limit"], bool)
+            or not 1 <= stage["parallel_limit"] <= MAX_READ_ONLY_CHILDREN
+        ):
+            raise ValueError("route stage parallel_limit is invalid")
+        if stage["parallelism"] == "independent_read_only" and stage["writer_mode"] != "read_only":
+            raise ValueError("only read-only stages may declare independent parallelism")
+        if (stage["parallelism"] == "serial") != (stage["parallel_limit"] == 1):
+            raise ValueError("route stage parallelism/limit disagree")
+        if not isinstance(stage["stage_id"], str) or not HEX_ID.fullmatch(stage["stage_id"]):
+            raise ValueError("route stage stage_id is invalid")
+        if not isinstance(stage["attempt"], int) or isinstance(stage["attempt"], bool) or stage["attempt"] < 1:
+            raise ValueError("route stage attempt is invalid")
+        if stage["role"] == "direct" and stage["execution_target"] != "direct":
+            raise ValueError("direct role requires direct execution target")
+
+
+def _validate_token_estimate(value: Any) -> None:
+    estimate = _strict_object(
+        value,
+        {
+            "direct_total", "routed_total", "worker", "handoff",
+            "acceptance", "selected_total", "selection_reason",
+        },
+        {
+            "direct_total", "routed_total", "worker", "handoff",
+            "acceptance", "selected_total", "selection_reason",
+        },
+        "token_estimate",
+    )
+    for key in ("direct_total", "routed_total", "worker", "handoff", "acceptance", "selected_total"):
+        if not isinstance(estimate[key], int) or isinstance(estimate[key], bool) or estimate[key] < 0:
+            raise ValueError(f"token_estimate.{key} is invalid")
+    if estimate["selection_reason"] not in {
+        "direct_lower_total", "delegated_lower_total", "complex_default",
+        "quality_floor", "visible_task_isolation", "dispatch_blocked",
+    }:
+        raise ValueError("token_estimate.selection_reason is invalid")
+
+
+def _validate_handoff_contract(value: Any) -> None:
+    contract = _strict_object(
+        value,
+        {"input_contract", "deliverable", "acceptance", "failure_disposition"},
+        {"input_contract", "deliverable", "acceptance", "failure_disposition"},
+        "handoff_contract",
+    )
+    if contract != {
+        "input_contract": "frozen_scope",
+        "deliverable": "bounded_result",
+        "acceptance": "root_quality_gate",
+        "failure_disposition": "freeze_and_reroute",
+    }:
+        raise ValueError("handoff_contract is invalid")
 
 
 def _validate_capability_exception(value: Any) -> None:
@@ -281,8 +470,13 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         "reasoning_effort", "confidence", "decision_features", "constraints", "policy_revision",
         "shadow", "session", "project", "plan_version", "capability_floor", "effort_basis",
         "route_mode", "stages", "capability_exception",
+        "execution_target", "execution_mode", "delegation_depth",
+        "writer_ownership", "dispatch_ready", "dispatch_blocker",
+        "token_estimate", "handoff_contract",
+        "visible_task_title",
+        "profile_version",
     }
-    execution = {"task_ref", "route_id", "event", "tool_kind", "failed", "verification_kind", "transition"}
+    execution = {"task_ref", "route_id", "event", "tool_kind", "failed", "verification_kind", "transition", "archive_status"}
     outcome = {
         "task_ref", "route_id", "status", "quality_gate", "route_fit", "verification_kinds",
         "confidence", "evidence_source", "objective_verification", "user_confirmed", "replacement",
@@ -290,27 +484,51 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         "token_band", "cost_band", "stage", "model_fit", "effort_fit",
         "context_fit", "tool_data_fit", "failure_axis", "result_signal",
         "stage_source", "audit_followup",
+        "dispatch_mode", "observed_execution", "plan_match", "boundary_status",
+        "scope_status", "verification_status", "archive_status", "delegation_depth",
+        "stage_lease", "local_tokens",
     }
     if not isinstance(value, dict) or value.get("type") not in {"route", "execution", "outcome"}:
         raise ValueError("evidence event type is invalid")
     event_type = value["type"]
     allowed = common | ({"route": route, "execution": execution, "outcome": outcome}[event_type])
     legacy_route = route - {
-        "plan_version", "capability_floor", "effort_basis", "route_mode", "stages", "capability_exception"
+        "plan_version", "capability_floor", "effort_basis", "route_mode", "stages",
+        "capability_exception", "execution_target", "execution_mode",
+        "delegation_depth", "writer_ownership", "dispatch_ready",
+        "dispatch_blocker", "token_estimate", "handoff_contract",
+        "visible_task_title", "profile_version",
     }
     schema_version = value.get("schema_version")
     legacy_outcome = outcome - {
         "stage", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis",
-        "result_signal", "stage_source", "audit_followup",
+        "result_signal", "stage_source", "audit_followup", "dispatch_mode",
+        "observed_execution", "plan_match", "boundary_status", "scope_status",
+        "verification_status", "archive_status", "delegation_depth", "stage_lease",
+        "local_tokens",
     }
     payload_required = {
-        "route": route if schema_version == 3 else legacy_route,
+        "route": route - {"visible_task_title"} if schema_version == 4 else (
+            route - {
+                "execution_target", "execution_mode", "delegation_depth",
+                "writer_ownership", "dispatch_ready", "dispatch_blocker",
+                "token_estimate", "handoff_contract",
+                "visible_task_title",
+                "profile_version",
+            } if schema_version == 3 else legacy_route
+        ),
         "execution": {"task_ref", "route_id", "event"},
-        "outcome": outcome - {"stage", "audit_followup"} if schema_version == 3 else legacy_outcome,
+        "outcome": outcome - {"stage", "audit_followup", "local_tokens"} if schema_version == 4 else (
+            outcome - {
+                "stage", "audit_followup", "dispatch_mode", "observed_execution",
+                "plan_match", "boundary_status", "scope_status", "verification_status",
+                "archive_status", "delegation_depth", "stage_lease", "local_tokens",
+            } if schema_version == 3 else legacy_outcome
+        ),
     }[event_type]
     required = common - {"dedupe_key"} | payload_required
     event = _strict_object(value, allowed, required, f"{event_type} event")
-    if event["schema_version"] not in {2, 3} or not isinstance(event["sequence"], int) or isinstance(event["sequence"], bool) or event["sequence"] < 1:
+    if event["schema_version"] not in {2, 3, 4} or not isinstance(event["sequence"], int) or isinstance(event["sequence"], bool) or event["sequence"] < 1:
         raise ValueError("evidence sequence/schema is invalid")
     try:
         uuid.UUID(str(event["event_id"]))
@@ -333,7 +551,8 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         if event["role"] not in VALID_ROLES or event["model"] not in VALID_MODELS or event["reasoning_effort"] not in VALID_EFFORTS:
             raise ValueError("route tuple is invalid")
         if "plan_version" in event:
-            if event["plan_version"] != 2 or event.get("route_mode") not in {"single", "staged"}:
+            expected_plan = 3 if event["schema_version"] == 4 else 2
+            if event["plan_version"] != expected_plan or event.get("route_mode") not in {"single", "staged"}:
                 raise ValueError("route plan version/mode is invalid")
             if event.get("capability_floor") not in VALID_MODELS or MODEL_ORDER[event["model"]] < MODEL_ORDER[event["capability_floor"]]:
                 raise ValueError("route violates capability floor")
@@ -344,15 +563,38 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
             if not isinstance(event.get("stages"), list) or not event["stages"]:
                 raise ValueError("route stages are invalid")
             for stage in event["stages"]:
-                _validate_stage(stage)
+                _validate_stage(stage, v4=event["schema_version"] == 4)
             _validate_capability_exception(event.get("capability_exception"))
+        if event["schema_version"] == 4:
+            if event["execution_target"] not in EXECUTION_TARGETS or event["execution_mode"] not in EXECUTION_MODES:
+                raise ValueError("route execution target/mode is invalid")
+            if event["profile_version"] != 4:
+                raise ValueError("route profile version is invalid")
+            if not isinstance(event["delegation_depth"], int) or isinstance(event["delegation_depth"], bool) or not 0 <= event["delegation_depth"] <= MAX_DELEGATION_DEPTH:
+                raise ValueError("route delegation depth is invalid")
+            owner = _strict_object(event["writer_ownership"], {"mode", "owner"}, {"mode", "owner"}, "writer_ownership")
+            if owner["mode"] != "single_writer" or owner["owner"] not in VALID_ROLES:
+                raise ValueError("writer ownership is invalid")
+            if type(event["dispatch_ready"]) is not bool or event["dispatch_blocker"] not in DISPATCH_BLOCKERS:
+                raise ValueError("dispatch readiness is invalid")
+            if event["dispatch_ready"] != (event["dispatch_blocker"] == "none"):
+                raise ValueError("dispatch readiness/blocker disagree")
+            _validate_token_estimate(event["token_estimate"])
+            _validate_handoff_contract(event["handoff_contract"])
+            title = event.get("visible_task_title")
+            if title is not None and (
+                event["execution_target"] != "visible_task"
+                or not isinstance(title, str)
+                or not VISIBLE_TASK_TITLE.fullmatch(title)
+            ):
+                raise ValueError("visible task title is invalid")
         if not _is_number(event["confidence"]) or not 0 <= event["confidence"] <= 1:
             raise ValueError("route confidence is invalid")
         if not isinstance(event["policy_revision"], int) or isinstance(event["policy_revision"], bool) or event["policy_revision"] < 1:
             raise ValueError("policy_revision is invalid")
         validate_decision_features(event["decision_features"])
-        if event["schema_version"] == 3 and event["decision_features"].get("feature_version") != 2:
-            raise ValueError("route v3 requires Decision Features v2")
+        if event["schema_version"] in {3, 4} and event["decision_features"].get("feature_version") != 2:
+            raise ValueError("route v3/v4 requires Decision Features v2")
         validate_constraints(event["constraints"])
         if event["shadow"] is not None:
             shadow = _strict_object(event["shadow"], {"proposal_id", "axis", "candidate"}, {"proposal_id", "axis", "candidate"}, "shadow")
@@ -369,6 +611,15 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
             raise ValueError("verification_kind is invalid")
         if "transition" in event:
             _validate_transition(event["transition"])
+        if event["event"] == "ArchiveObserved":
+            if (
+                event["schema_version"] != 4
+                or event.get("archive_status") != "archived"
+                or "transition" in event
+            ):
+                raise ValueError("archive observation is invalid")
+        elif "archive_status" in event:
+            raise ValueError("archive_status is valid only for ArchiveObserved")
     else:
         if event["status"] not in OUTCOME_STATUSES or event["quality_gate"] not in QUALITY_GATES or event["route_fit"] not in ROUTE_FITS:
             raise ValueError("outcome classification is invalid")
@@ -384,7 +635,7 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         _validate_replacement(event["replacement"])
         if any(event[key] not in BANDS for key in ("retry_band", "rework_band", "tool_band", "duration_band", "token_band", "cost_band")):
             raise ValueError("outcome resource band is invalid")
-        if event["schema_version"] == 3:
+        if event["schema_version"] in {3, 4}:
             if "stage" in event and event["stage"] not in STAGE_NAMES:
                 raise ValueError("outcome stage is invalid")
             if event["model_fit"] not in MODEL_EFFORT_FITS or event["effort_fit"] not in MODEL_EFFORT_FITS:
@@ -400,14 +651,84 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
             if event["stage_source"] != "unknown" and "stage" not in event:
                 raise ValueError("outcome stage_source requires a stage")
             if "audit_followup" in event:
-                _validate_stage(event["audit_followup"])
+                _validate_stage(event["audit_followup"], v4=event["schema_version"] == 4)
                 if (
                     event["result_signal"] != "exceptional_positive"
                     or event["audit_followup"]["stage"] != "audit"
                     or event["audit_followup"]["authority"] != "audit"
                 ):
                     raise ValueError("outcome audit_followup is invalid")
+        if event["schema_version"] == 4:
+            if event["dispatch_mode"] not in EXECUTION_TARGETS:
+                raise ValueError("outcome dispatch_mode is invalid")
+            observed = _strict_object(
+                event["observed_execution"],
+                {"role", "model", "reasoning_effort", "execution_target"},
+                {"role", "model", "reasoning_effort", "execution_target"},
+                "observed_execution",
+            )
+            if (
+                observed["role"] not in VALID_ROLES | {"unknown"}
+                or observed["model"] not in VALID_MODELS | {"unknown"}
+                or observed["reasoning_effort"] not in VALID_EFFORTS | {"unknown"}
+                or observed["execution_target"] not in EXECUTION_TARGETS | {"unknown"}
+            ):
+                raise ValueError("observed execution provenance is invalid")
+            if event["plan_match"] not in PLAN_MATCHES or event["boundary_status"] not in BOUNDARY_STATUSES:
+                raise ValueError("outcome plan/boundary state is invalid")
+            if event["scope_status"] not in SCOPE_STATUSES or event["verification_status"] not in VERIFICATION_STATUSES:
+                raise ValueError("outcome scope/verification state is invalid")
+            if event["archive_status"] not in ARCHIVE_STATUSES:
+                raise ValueError("outcome archive state is invalid")
+            if not isinstance(event["delegation_depth"], int) or isinstance(event["delegation_depth"], bool) or not 0 <= event["delegation_depth"] <= MAX_DELEGATION_DEPTH:
+                raise ValueError("outcome delegation depth is invalid")
+            lease = _strict_object(event["stage_lease"], {"lease_id", "status"}, {"lease_id", "status"}, "stage_lease")
+            if lease["lease_id"] != "unknown" and (not isinstance(lease["lease_id"], str) or not HEX_ID.fullmatch(lease["lease_id"])):
+                raise ValueError("stage lease id is invalid")
+            if lease["status"] not in LEASE_STATUSES | {"unknown"}:
+                raise ValueError("stage lease status is invalid")
+            if "local_tokens" in event:
+                local = _strict_object(event["local_tokens"], {"input", "output", "total", "source", "complete"}, {"input", "output", "total", "source", "complete"}, "local_tokens")
+                if any(not isinstance(local[k], int) or isinstance(local[k], bool) or local[k] < 0 for k in ("input", "output", "total")) or local["total"] != local["input"] + local["output"]:
+                    raise ValueError("local token counts are invalid")
+                if local["source"] not in {"provider_usage", "codex_usage", "caller_supplied"} or type(local["complete"]) is not bool:
+                    raise ValueError("local token provenance is invalid")
     return event
+
+
+def project_public_evidence_event(value: dict[str, Any]) -> dict[str, Any]:
+    """Project local v4 evidence to the enum/HMAC/band-only GitHub contract."""
+    event = json.loads(json.dumps(value))
+    if event.get("schema_version") != 4:
+        return event
+    event.pop("local_tokens", None)
+    event.pop("visible_task_title", None)
+    event.pop("token_estimate", None)
+    return event
+
+
+def validate_public_evidence_event(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError("public evidence event must be an object")
+    if value.get("schema_version") != 4:
+        return validate_evidence_event(value)
+    candidate = dict(value)
+    if candidate.get("type") == "route":
+        candidate.setdefault(
+            "token_estimate",
+            {
+                "direct_total": 0,
+                "routed_total": 0,
+                "worker": 0,
+                "handoff": 0,
+                "acceptance": 0,
+                "selected_total": 0,
+                "selection_reason": "quality_floor",
+            },
+        )
+        candidate.setdefault("visible_task_title", None)
+    candidate.pop("local_tokens", None)
+    return validate_evidence_event(candidate)
 
 
 def utc_now() -> str:
@@ -1092,20 +1413,37 @@ class RoutePlan:
     decision_features: dict[str, Any]
     constraints: dict[str, Any]
     plan_version: int
+    profile_version: int
     capability_floor: str
     effort_basis: list[str]
     route_mode: str
     stages: list[dict[str, Any]]
     capability_exception: dict[str, Any] | None
+    execution_target: str
+    execution_mode: str
+    delegation_depth: int
+    writer_ownership: dict[str, str]
+    dispatch_ready: bool
+    dispatch_blocker: str
+    token_estimate: dict[str, int | str]
+    handoff_contract: dict[str, str]
+    visible_task_title: str | None
     shadow_recommendation: dict[str, Any] | None = None
 
 
 def _active_overrides(
-    policy: dict[str, Any], profile: str, task_class: str
+    policy: dict[str, Any], profile: str, task_class: str,
+    fixed_context: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     result = {}
     for item in policy.get("overrides", []):
         if item.get("profile") != profile or item.get("task_class") != task_class:
+            continue
+        fixed = item.get("fixed")
+        if isinstance(fixed, dict) and (
+            fixed_context is None
+            or any(str(fixed_context.get(key)) != str(value) for key, value in fixed.items())
+        ):
             continue
         if item.get("axis") in {"role", "model", "reasoning_effort"}:
             result[item["axis"]] = str(item.get("to"))
@@ -1121,7 +1459,8 @@ def _active_overrides(
 
 
 def _shadow_recommendation(
-    profile: str, task_class: str, root: Path | None
+    profile: str, task_class: str, root: Path | None,
+    fixed_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     for proposal_id, item in load_shadows(root)["items"].items():
         proposal = item.get("proposal", {})
@@ -1129,6 +1468,14 @@ def _shadow_recommendation(
             item.get("state") == "active"
             and proposal.get("profile") == profile
             and proposal.get("task_class") == task_class
+            and (
+                not isinstance(proposal.get("fixed"), dict)
+                or fixed_context is not None
+                and all(
+                    str(fixed_context.get(key)) == str(value)
+                    for key, value in proposal["fixed"].items()
+                )
+            )
         ):
             return {
                 "proposal_id": proposal_id,
@@ -1230,7 +1577,9 @@ def _deterministic_effort(
 
 
 def _stage(
-    loaded: dict[str, Any], stage: str, authority: str, role: str, effort: str
+    loaded: dict[str, Any], stage: str, authority: str, role: str, effort: str,
+    *, delegation_depth: int = 0, execution_target: str | None = None,
+    writer_mode: str = "read_only",
 ) -> dict[str, Any]:
     config = _role_config(loaded, role)
     floor = str(config["capability_floor"])
@@ -1241,6 +1590,7 @@ def _stage(
     _validate_route_tuple(
         loaded, role, model, effort, explicit_effort=effort in {"max", "ultra"}
     )
+    target = execution_target or ("direct" if role == "direct" else "subagent")
     return {
         "stage": stage,
         "authority": authority,
@@ -1249,51 +1599,128 @@ def _stage(
         "model": model,
         "reasoning_effort": effort,
         "required": True,
+        "execution_target": target,
+        "execution_mode": (
+            "root" if target == "direct" else "isolated" if target == "visible_task" else "delegated"
+        ),
+        "delegation_depth": min(
+            MAX_DELEGATION_DEPTH,
+            delegation_depth + (0 if target == "direct" else 1),
+        ),
+        "writer_mode": writer_mode,
+        "access_mode": "writer" if writer_mode == "single_writer" else "read_only",
+        "parallelism": "serial",
+        "parallel_limit": 1,
+        "lease_required": target != "direct",
+        "stage_id": uuid.uuid4().hex,
+        "attempt": 1,
     }
 
 
 def _route_stages(
     loaded: dict[str, Any], task_class: str, effort: str, *, add_audit: bool,
-    needs_implementation: bool = False,
+    needs_implementation: bool = False, delegation_depth: int = 0,
+    worker_target: str = "subagent",
+    independent_read_only_count: int = 1,
 ) -> list[dict[str, Any]]:
     if task_class == "direct":
-        stages = [_stage(loaded, "synthesize", "decision", "direct", effort)]
+        stages = [_stage(loaded, "synthesize", "decision", "direct", effort, delegation_depth=delegation_depth)]
     elif task_class in {"discovery", "execution"}:
         worker = "router_code_mapper" if task_class == "discovery" else "router_experiment_runner"
         stages = [
-            _stage(loaded, "collect", "evidence", worker, effort),
-            _stage(loaded, "synthesize", "decision", "direct", "medium"),
+            _stage(loaded, "collect", "evidence", worker, effort, delegation_depth=delegation_depth, execution_target=worker_target),
+            _stage(loaded, "synthesize", "decision", "direct", "medium", delegation_depth=delegation_depth),
         ]
     elif task_class == "implementation":
         stages = [
-            _stage(loaded, "frame", "decision", "direct", "medium"),
-            _stage(loaded, "implement", "implementation", "router_research_engineer", effort),
-            _stage(loaded, "verify", "evidence", "router_experiment_runner", "medium"),
-            _stage(loaded, "synthesize", "decision", "direct", "medium"),
+            _stage(loaded, "frame", "decision", "direct", "medium", delegation_depth=delegation_depth),
+            _stage(loaded, "implement", "implementation", "router_research_engineer", effort, delegation_depth=delegation_depth, execution_target=worker_target, writer_mode="single_writer"),
+            _stage(loaded, "verify", "evidence", "router_experiment_runner", "medium", delegation_depth=delegation_depth, execution_target=worker_target),
+            _stage(loaded, "synthesize", "decision", "direct", "medium", delegation_depth=delegation_depth),
         ]
     elif task_class in {"research", "diagnosis", "architecture", "exploration", "audit"}:
         decision_role = {
             "architecture": "router_architect",
             "exploration": "router_strategy_scout",
-        }.get(task_class, "router_researcher")
+        }.get(task_class, "router_quant_researcher" if loaded.get("name") == "quant" else "router_researcher")
         stages = [
-            _stage(loaded, "frame", "decision", decision_role, effort),
-            _stage(loaded, "collect", "evidence", "router_code_mapper", "medium"),
+            _stage(loaded, "frame", "decision", decision_role, effort, delegation_depth=delegation_depth, execution_target=worker_target),
+            _stage(loaded, "collect", "evidence", "router_code_mapper", "medium", delegation_depth=delegation_depth, execution_target=worker_target),
         ]
         if needs_implementation:
             stages.append(
-                _stage(loaded, "implement", "implementation", "router_research_engineer", "high")
+                _stage(loaded, "implement", "implementation", "router_research_engineer", "high", delegation_depth=delegation_depth, execution_target=worker_target, writer_mode="single_writer")
             )
         stages.append(
-            _stage(loaded, "synthesize", "decision", decision_role, effort)
+            _stage(loaded, "synthesize", "decision", decision_role, effort, delegation_depth=delegation_depth, execution_target=worker_target)
         )
     else:
-        stages = [_stage(loaded, "synthesize", "decision", "direct", "medium")]
+        stages = [_stage(loaded, "synthesize", "decision", "direct", "medium", delegation_depth=delegation_depth)]
     if add_audit and stages[-1]["stage"] != "audit":
         stages.append(
-            _stage(loaded, "audit", "audit", "router_adversarial_auditor", "xhigh")
+            _stage(loaded, "audit", "audit", "router_adversarial_auditor", "xhigh", delegation_depth=delegation_depth, execution_target=worker_target)
         )
+    if independent_read_only_count > 1:
+        parallel_stage = next(
+            (
+                item for item in stages
+                if item["authority"] == "evidence"
+                and item["writer_mode"] == "read_only"
+                and item["execution_target"] != "direct"
+            ),
+            None,
+        )
+        if parallel_stage is None:
+            raise ValueError("route has no read-only evidence stage for declared parallel work")
+        parallel_stage["parallelism"] = "independent_read_only"
+        parallel_stage["parallel_limit"] = independent_read_only_count
     return stages
+
+
+def _token_estimate(
+    features: dict[str, Any], context: dict[str, Any], *, prefer_direct: bool,
+    quality_requires_specialist: bool, visible_task: bool, blocked: bool,
+) -> dict[str, int | str]:
+    defaults = {"small": 1600, "medium": 4200, "large": 9000, "batch": 14000}
+    direct = int(context.get("estimated_direct_tokens", defaults[features["workload"]]))
+    worker = int(context.get("estimated_worker_tokens", max(700, round(direct * 0.58))))
+    handoff = int(context.get("estimated_handoff_tokens", 650))
+    acceptance = int(context.get("estimated_acceptance_tokens", 500))
+    routed = worker + handoff + acceptance
+    if blocked:
+        reason = "dispatch_blocked"
+    elif quality_requires_specialist:
+        reason = "quality_floor"
+    elif visible_task:
+        reason = "visible_task_isolation"
+    elif prefer_direct:
+        reason = "direct_lower_total"
+    elif routed < direct:
+        reason = "delegated_lower_total"
+    else:
+        reason = "complex_default"
+    return {
+        "direct_total": direct,
+        "routed_total": routed,
+        "worker": worker,
+        "handoff": handoff,
+        "acceptance": acceptance,
+        "selected_total": direct if prefer_direct else routed,
+        "selection_reason": reason,
+    }
+
+
+def _visible_task_title(model: str, effort: str, task_class: str) -> str:
+    model_name = model.rsplit("-", 1)[-1].upper()
+    objective = {
+        "implementation": "实现冻结规格",
+        "architecture": "冻结架构语义",
+        "research": "完成研究判断",
+        "diagnosis": "完成根因诊断",
+        "exploration": "探索新方向",
+        "audit": "执行对抗审计",
+    }.get(task_class, "完成隔离任务")
+    return f"[AR][{model_name}-{effort.upper()}] {objective}"
 
 
 def make_route_plan(
@@ -1304,6 +1731,7 @@ def make_route_plan(
     force_role: str | None = None,
     decision_features: dict[str, Any] | None = None,
     constraints: dict[str, Any] | None = None,
+    routing_context: dict[str, Any] | None = None,
     route_id: str | None = None,
     root: Path | None = None,
 ) -> RoutePlan:
@@ -1313,15 +1741,27 @@ def make_route_plan(
         raise ValueError("invalid task_state")
     selected = infer_profile(task, profile)
     constraints = validate_constraints(constraints)
+    routing_context = validate_routing_context(routing_context)
     features = infer_decision_features(
         task, task_state=task_state, supplied=decision_features
     )
     features["user_constraints"] = sorted(constraints)
     task_class = str(features["cognitive_type"])
+    original_task_class = task_class
     if task_class == "implementation" and features["spec_state"] != "frozen":
         task_class = "research"
     role = force_role or ROLE_BY_COGNITIVE.get(task_class, "direct")
     loaded = load_profile(selected)
+    if (
+        selected == "quant"
+        and task_class in {"research", "diagnosis"}
+        and force_role is None
+    ):
+        role = "router_quant_researcher"
+    token_policy = dict(loaded.get("token_policy") or {})
+    token_context = dict(routing_context)
+    token_context.setdefault("estimated_handoff_tokens", int(token_policy.get("handoff_tokens", 650)))
+    token_context.setdefault("estimated_acceptance_tokens", int(token_policy.get("acceptance_tokens", 500)))
     override = _active_overrides(load_policy(root), selected, task_class)
     if not force_role and "role" not in constraints and not constraints.get("no_delegation"):
         role = override.get("role", role)
@@ -1367,6 +1807,113 @@ def make_route_plan(
         explicit_effort=bool(explicit_effort or policy_effort),
     )
 
+    delegation_depth = int(routing_context.get("delegation_depth", 0))
+    caller_is_root = bool(routing_context.get("caller_is_root", delegation_depth == 0))
+    isolation = bool(
+        routing_context.get("context_isolation_required")
+        or routing_context.get("cross_project")
+        or routing_context.get("long_running")
+    )
+    quality_requires_specialist = (
+        effort != "medium"
+        or (
+            config["authority"] in {"decision", "audit"}
+            and role != "direct"
+        )
+    )
+    no_delegation_quality_block = bool(
+        (
+            constraints.get("no_delegation")
+            or constraints.get("role") == "direct"
+            or force_role == "direct"
+        )
+        and original_task_class in {
+            "implementation", "diagnosis", "research", "architecture", "audit", "exploration"
+        }
+    )
+    rough_direct = int(token_context.get("estimated_direct_tokens", {
+        "small": 1600, "medium": 4200, "large": 9000, "batch": 14000,
+    }[features["workload"]]))
+    rough_routed = (
+        int(token_context.get("estimated_worker_tokens", max(700, round(rough_direct * 0.58))))
+        + int(token_context.get("estimated_handoff_tokens", 650))
+        + int(token_context.get("estimated_acceptance_tokens", 500))
+    )
+    direct_exception = (
+        task_class != "direct"
+        and not quality_requires_specialist
+        and not isolation
+        and rough_routed - rough_direct >= int(token_policy.get("minimum_direct_savings_tokens", 400))
+        and (rough_routed - rough_direct) / max(rough_routed, 1) >= float(token_policy.get("minimum_direct_savings_ratio", 0.15))
+        and features["verification_depth"] in {"basic", "standard"}
+        and features["decision_impact"] in {"low", "medium"}
+        and features["reversibility"] != "irreversible"
+        and not set(features["risk_domains"]) & {"quantitative_research", "high_impact"}
+    )
+    execution_target = (
+        "direct" if task_class == "direct" or direct_exception
+        else "visible_task" if isolation
+        else "subagent"
+    )
+    execution_mode = {
+        "direct": "root", "subagent": "delegated", "visible_task": "isolated",
+    }[execution_target]
+    dispatch_blocker = "none"
+    if no_delegation_quality_block:
+        dispatch_blocker = "quality_floor_requires_specialist"
+    elif execution_target == "visible_task" and not caller_is_root:
+        dispatch_blocker = "visible_task_root_only"
+    elif execution_target == "visible_task" and routing_context.get("visible_task_available") is False:
+        dispatch_blocker = "visible_task_unavailable"
+    elif execution_target == "subagent" and routing_context.get("worker_available") is False:
+        dispatch_blocker = "worker_unavailable"
+    elif execution_target != "direct" and delegation_depth >= MAX_DELEGATION_DEPTH:
+        dispatch_blocker = "delegation_depth_exceeded"
+    primary_stage_hint = {
+        "direct": "synthesize",
+        "discovery": "collect",
+        "execution": "collect",
+        "implementation": "implement",
+    }.get(task_class, "unknown")
+    primary_delegation_depth_hint = (
+        delegation_depth
+        if execution_target == "direct"
+        else min(delegation_depth + 1, MAX_DELEGATION_DEPTH)
+    )
+    scoped_override = _active_overrides(
+        load_policy(root),
+        selected,
+        task_class,
+        {
+            "role": role,
+            "model": model,
+            "reasoning_effort": effort,
+            "execution_target": execution_target,
+            "delegation_depth": primary_delegation_depth_hint,
+            "stage": primary_stage_hint,
+        },
+    )
+    if "model" in scoped_override and "model" not in constraints:
+        model = str(scoped_override["model"])
+    if "reasoning_effort" in scoped_override and "reasoning_effort" not in constraints:
+        effort = str(scoped_override["reasoning_effort"])
+        effort_basis = ["policy_override"]
+    _validate_route_tuple(
+        loaded,
+        role,
+        model,
+        effort,
+        explicit_effort=bool(
+            constraints.get("reasoning_effort")
+            or "reasoning_effort" in scoped_override
+        ),
+    )
+    if direct_exception:
+        role = "direct"
+        model = "gpt-5.6-sol"
+        effort = "medium"
+        floor = "gpt-5.6-sol"
+
     exceptional = _contains(_normalise(task), EXCEPTIONAL_TERMS)
     add_audit = (
         task_class == "audit"
@@ -1377,7 +1924,7 @@ def make_route_plan(
         effort_basis.append("high_impact_exceptional_result")
     stages = _route_stages(
         loaded,
-        task_class,
+        "direct" if direct_exception else task_class,
         effort,
         add_audit=add_audit,
         needs_implementation=(
@@ -1385,8 +1932,13 @@ def make_route_plan(
             and features["operation_mode"] == "change"
             and features["spec_state"] == "frozen"
         ),
+        delegation_depth=delegation_depth,
+        worker_target=execution_target if execution_target != "direct" else "subagent",
+        independent_read_only_count=int(
+            routing_context.get("independent_read_only_count", 1)
+        ),
     )
-    primary_stage_name = {
+    primary_stage_name = None if direct_exception else {
         "discovery": "collect",
         "execution": "collect",
         "implementation": "implement",
@@ -1415,13 +1967,60 @@ def make_route_plan(
         output_contract="Return the bounded stage result; named Sol specialists may supply delegated decisions or audits, while the Root stays Sol Medium and owns intent, integration, acceptance, and the user-facing conclusion.",
         decision_features=features,
         constraints=constraints,
-        plan_version=2,
+        plan_version=3,
+        profile_version=4,
         capability_floor=floor,
         effort_basis=effort_basis,
         route_mode="single" if len(stages) == 1 else "staged",
         stages=stages,
         capability_exception=capability_exception,
-        shadow_recommendation=_shadow_recommendation(selected, task_class, root),
+        execution_target=execution_target,
+        execution_mode=execution_mode,
+        delegation_depth=delegation_depth,
+        writer_ownership={
+            "mode": "single_writer",
+            "owner": next(
+                (
+                    str(stage["role"])
+                    for stage in stages
+                    if stage["writer_mode"] == "single_writer"
+                ),
+                "direct",
+            ),
+        },
+        dispatch_ready=dispatch_blocker == "none",
+        dispatch_blocker=dispatch_blocker,
+        token_estimate=_token_estimate(
+            features,
+            token_context,
+            prefer_direct=execution_target == "direct",
+            quality_requires_specialist=quality_requires_specialist,
+            visible_task=execution_target == "visible_task",
+            blocked=dispatch_blocker != "none",
+        ),
+        handoff_contract={
+            "input_contract": "frozen_scope",
+            "deliverable": "bounded_result",
+            "acceptance": "root_quality_gate",
+            "failure_disposition": "freeze_and_reroute",
+        },
+        visible_task_title=(
+            _visible_task_title(model, effort, task_class)
+            if execution_target == "visible_task" else None
+        ),
+        shadow_recommendation=_shadow_recommendation(
+            selected,
+            task_class,
+            root,
+            {
+                "role": role,
+                "model": model,
+                "reasoning_effort": effort,
+                "execution_target": execution_target,
+                "delegation_depth": primary_delegation_depth_hint,
+                "stage": primary_stage_hint,
+            },
+        ),
     )
 
 
@@ -1468,13 +2067,31 @@ class RouterEngine:
                         "policy_revision",
                         "shadow",
                         "plan_version",
+                        "profile_version",
                         "capability_floor",
                         "effort_basis",
                         "route_mode",
                         "stages",
                         "capability_exception",
+                        "execution_target",
+                        "execution_mode",
+                        "delegation_depth",
+                        "writer_ownership",
+                        "dispatch_ready",
+                        "dispatch_blocker",
+                        "token_estimate",
+                        "handoff_contract",
                     )
                 }
+                route["visible_task_title"] = (
+                    _visible_task_title(
+                        str(route.get("model")),
+                        str(route.get("reasoning_effort")),
+                        str(route.get("task_class")),
+                    )
+                    if route.get("execution_target") == "visible_task"
+                    else None
+                )
                 value["tasks"][reference] = {
                     "task_ref": reference,
                     "route_id": event.get("route_id"),
@@ -1492,6 +2109,7 @@ class RouterEngine:
                         "verification_kinds": [],
                         "transitions": [],
                         "lifecycle": {},
+                        "leases": {},
                     },
                 }
         for task in value["tasks"].values():
@@ -1502,6 +2120,7 @@ class RouterEngine:
             aggregate.setdefault("verification_kinds", [])
             aggregate.setdefault("transitions", [])
             aggregate.setdefault("lifecycle", {})
+            aggregate.setdefault("leases", {})
         return value
 
     def _append(
@@ -1521,8 +2140,10 @@ class RouterEngine:
                 record,
             )
         value = dict(record)
+        if value.get("type") == "route":
+            value.pop("visible_task_title", None)
         value.update(
-            schema_version=3,
+            schema_version=4,
             event_id=str(uuid.uuid4()),
             sequence=int(ledger["next_sequence"]),
             created_at=utc_now(),
@@ -1549,11 +2170,21 @@ class RouterEngine:
             "decision_features": plan.decision_features,
             "constraints": plan.constraints,
             "plan_version": plan.plan_version,
+            "profile_version": plan.profile_version,
             "capability_floor": plan.capability_floor,
             "effort_basis": plan.effort_basis,
             "route_mode": plan.route_mode,
             "stages": plan.stages,
             "capability_exception": plan.capability_exception,
+            "execution_target": plan.execution_target,
+            "execution_mode": plan.execution_mode,
+            "delegation_depth": plan.delegation_depth,
+            "writer_ownership": plan.writer_ownership,
+            "dispatch_ready": plan.dispatch_ready,
+            "dispatch_blocker": plan.dispatch_blocker,
+            "token_estimate": plan.token_estimate,
+            "handoff_contract": plan.handoff_contract,
+            "visible_task_title": plan.visible_task_title,
             "policy_revision": 1,
             "shadow": plan.shadow_recommendation,
         }
@@ -1578,6 +2209,7 @@ class RouterEngine:
         project: str | None = None,
         decision_features: dict[str, Any] | None = None,
         constraints: dict[str, Any] | None = None,
+        routing_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         key = identity(f"task:{session_id}:{turn_id}", self.root)
         with _file_lock(ledger_path(self.root)):
@@ -1591,6 +2223,7 @@ class RouterEngine:
                 prompt,
                 decision_features=decision_features,
                 constraints=constraints,
+                routing_context=routing_context,
                 root=self.root,
             )
             route = self._route_payload(plan)
@@ -1611,6 +2244,7 @@ class RouterEngine:
                     "verification_kinds": [],
                     "transitions": [],
                     "lifecycle": {},
+                    "leases": {},
                 },
             }
             ledger["tasks"][key] = task
@@ -1670,6 +2304,18 @@ class RouterEngine:
                 "failure_axis": "execution",
                 "result_signal": "unknown",
                 "stage_source": "unknown",
+                "dispatch_mode": previous["route"].get("execution_target", "direct"),
+                "observed_execution": {
+                    "role": "unknown", "model": "unknown",
+                    "reasoning_effort": "unknown", "execution_target": "unknown",
+                },
+                "plan_match": "unknown",
+                "boundary_status": "unknown",
+                "scope_status": "unknown",
+                "verification_status": "failed",
+                "archive_status": "not_ready",
+                "delegation_depth": int(previous["route"].get("delegation_depth") or 0),
+                "stage_lease": {"lease_id": "unknown", "status": "unknown"},
             },
             f"followup:{previous['task_ref']}:{label}",
         )
@@ -1812,13 +2458,29 @@ class RouterEngine:
         task_ref: str | None = None,
         session_id: str | None = None,
         project_fingerprint: str | None = None,
+        project_identity: str | None = None,
+        parent_task_ref: str | None = None,
+        parent_lease_id: str | None = None,
         profile: str | None = None,
         task_state: str = "unknown",
         force_role: str | None = None,
         decision_features: dict[str, Any] | None = None,
         constraints: dict[str, Any] | None = None,
+        routing_context: dict[str, Any] | None = None,
         record: bool = True,
     ) -> dict[str, Any]:
+        if project_identity is not None and (
+            not isinstance(project_identity, str) or not HEX_ID.fullmatch(project_identity)
+        ):
+            raise ValueError("project_identity is invalid")
+        if parent_task_ref is not None and (
+            not isinstance(parent_task_ref, str) or not HEX_ID.fullmatch(parent_task_ref)
+        ):
+            raise ValueError("parent_task_ref is invalid")
+        if parent_lease_id is not None and (
+            not isinstance(parent_lease_id, str) or not HEX_ID.fullmatch(parent_lease_id)
+        ):
+            raise ValueError("parent_lease_id is invalid")
         with _file_lock(ledger_path(self.root)):
             ledger = self._ledger()
             if (
@@ -1840,6 +2502,7 @@ class RouterEngine:
                 force_role=force_role,
                 decision_features=decision_features,
                 constraints=constraints,
+                routing_context=routing_context,
                 root=self.root,
             )
             value = self._route_payload(plan)
@@ -1850,9 +2513,11 @@ class RouterEngine:
                     "route_id": plan.route_id,
                     "session": identity(session_id or "manual", self.root),
                     "turn": identity(plan.route_id, self.root),
-                    "project": identity(
+                    "project": project_identity or identity(
                         project_fingerprint or "unspecified", self.root
                     ),
+                    "parent_task_ref": parent_task_ref,
+                    "parent_lease_id": parent_lease_id,
                     "status": "active",
                     "started_at": utc_now(),
                     "started_sequence": int(ledger["next_sequence"]),
@@ -1864,6 +2529,7 @@ class RouterEngine:
                         "verification_kinds": [],
                         "transitions": [],
                         "lifecycle": {},
+                        "leases": {},
                     },
                 }
                 ledger["tasks"][reference] = task_record
@@ -1882,6 +2548,470 @@ class RouterEngine:
                 _atomic_write_json(ledger_path(self.root), ledger)
                 value["task_ref"] = reference
             return value
+
+    @staticmethod
+    def _find_lease(
+        ledger: dict[str, Any], lease_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        for task in ledger["tasks"].values():
+            leases = task.get("aggregate", {}).get("leases", {})
+            lease = leases.get(lease_id) if isinstance(leases, dict) else None
+            if isinstance(lease, dict):
+                return task, lease
+        return None
+
+    def dispatch_stage(
+        self,
+        task_ref: str,
+        stage: str,
+        *,
+        parent_lease_id: str | None = None,
+        independent_read_only: bool = False,
+        independence_key: str | None = None,
+        caller_is_root: bool = False,
+        worker_available: bool = True,
+        visible_task_available: bool = True,
+        visible_task_title: str | None = None,
+        objective: str | None = None,
+    ) -> dict[str, Any]:
+        """Acquire one bounded stage lease before dispatching work."""
+        if type(caller_is_root) is not bool or type(worker_available) is not bool or type(visible_task_available) is not bool:
+            raise ValueError("dispatch caller/readiness flags must be boolean")
+        if independence_key is not None and (
+            not isinstance(independence_key, str)
+            or not independence_key.strip()
+            or len(independence_key) > 120
+        ):
+            raise ValueError("independence_key is invalid")
+        with _file_lock(ledger_path(self.root)):
+            ledger = self._ledger()
+            task = ledger["tasks"].get(task_ref)
+            if not task:
+                raise ValueError("unknown task_ref")
+            route = task["route"]
+            if not route.get("dispatch_ready", True):
+                raise ValueError(f"dispatch blocked: {route.get('dispatch_blocker', 'unknown')}")
+            planned = next(
+                (
+                    item for item in route.get("stages", [])
+                    if stage in {item.get("stage"), item.get("stage_id")}
+                    and item.get("required") is True
+                ),
+                None,
+            )
+            if not isinstance(planned, dict):
+                followup = self._audit_followup_for_task(task_ref)
+                if (
+                    isinstance(followup, dict)
+                    and stage in {followup.get("stage"), followup.get("stage_id")}
+                    and followup.get("required") is True
+                ):
+                    planned = followup
+            if not isinstance(planned, dict):
+                raise TypeError("stage is not part of task route plan")
+            target = str(planned.get("execution_target") or "direct")
+            depth = int(planned.get("delegation_depth") or 0)
+            if depth > MAX_DELEGATION_DEPTH:
+                raise ValueError("dispatch blocked: delegation_depth_exceeded")
+            if target == "direct":
+                raise ValueError("direct stages do not acquire a delegated lease")
+            if target == "subagent" and not worker_available:
+                raise ValueError("dispatch blocked: worker_unavailable")
+            if target == "visible_task" and not visible_task_available:
+                raise ValueError("dispatch blocked: visible_task_unavailable")
+            if target == "visible_task":
+                if not caller_is_root or int(route.get("delegation_depth") or 0) != 0:
+                    raise ValueError("dispatch blocked: visible_task_root_only")
+                title = visible_task_title or route.get("visible_task_title")
+                if not isinstance(title, str) or not VISIBLE_TASK_TITLE.fullmatch(title):
+                    raise ValueError("dispatch blocked: visible_task_title_invalid")
+            if int(route.get("delegation_depth") or 0) > 0:
+                if not parent_lease_id:
+                    raise ValueError("dispatch blocked: parent_lease_required")
+                found = self._find_lease(ledger, parent_lease_id)
+                if (
+                    not found
+                    or found[1].get("status") not in {"active", "frozen"}
+                    or found[0].get("task_ref") != task.get("parent_task_ref")
+                    or found[1].get("lease_id") != task.get("parent_lease_id")
+                    or found[0].get("project") != task.get("project")
+                ):
+                    raise ValueError("dispatch blocked: parent_lease_inactive")
+            parent_key = parent_lease_id or f"root:{task_ref}"
+            active = []
+            active_writers = []
+            for candidate_task in ledger["tasks"].values():
+                for lease in candidate_task.get("aggregate", {}).get("leases", {}).values():
+                    if lease.get("status") != "active":
+                        continue
+                    if lease.get("parent") == parent_key:
+                        active.append(lease)
+                    if (
+                        lease.get("writer_mode") == "single_writer"
+                        and lease.get("repository_hmac") == task.get("project")
+                    ):
+                        active_writers.append(lease)
+            writer_mode = str(planned.get("writer_mode") or "read_only")
+            independence_hmac = (
+                identity(f"independence:{independence_key.strip()}", self.root)
+                if independence_key is not None
+                else None
+            )
+            if independent_read_only and (
+                writer_mode != "read_only"
+                or planned.get("parallelism") != "independent_read_only"
+                or independence_hmac is None
+            ):
+                raise ValueError("dispatch blocked: independent_read_only_not_declared")
+            if writer_mode == "single_writer" and active_writers:
+                raise ValueError("dispatch blocked: writer_lease_conflict")
+            if writer_mode == "read_only":
+                limit = int(planned.get("parallel_limit") or 1) if independent_read_only else 1
+                if len(active) >= limit:
+                    raise ValueError("dispatch blocked: read_only_concurrency_exceeded")
+                if independent_read_only and any(
+                    lease.get("writer_mode") != "read_only"
+                    or not lease.get("independent_read_only")
+                    for lease in active
+                ):
+                    raise ValueError("dispatch blocked: writer_lease_conflict")
+                if independent_read_only and any(
+                    lease.get("independence_hmac") == independence_hmac
+                    for lease in active
+                ):
+                    raise ValueError("dispatch blocked: duplicate_independence_key")
+            lease_id = identity(
+                f"lease:{task_ref}:{stage}:{uuid.uuid4()}", self.root
+            )
+            lease = {
+                "lease_id": lease_id,
+                "task_ref": task_ref,
+                "stage": planned["stage"],
+                "stage_id": planned["stage_id"],
+                "attempt": planned["attempt"],
+                "status": "active",
+                "parent": parent_key,
+                "delegation_depth": depth,
+                "execution_target": target,
+                "role": planned["role"],
+                "model": planned["model"],
+                "reasoning_effort": planned["reasoning_effort"],
+                "writer_mode": writer_mode,
+                "repository_hmac": task.get("project"),
+                "independent_read_only": bool(independent_read_only),
+                "independence_hmac": independence_hmac,
+                "started_at": utc_now(),
+            }
+            task["aggregate"].setdefault("leases", {})[lease_id] = lease
+            _atomic_write_json(ledger_path(self.root), ledger)
+            result = dict(lease)
+            result["agent_package"] = {
+                "objective": objective or "bounded_stage_objective",
+                "stage_id": planned["stage_id"],
+                "lease_id": lease_id,
+                "parent_lease_id": parent_lease_id,
+                "delegation_depth": depth,
+                "role": planned["role"],
+                "model": planned["model"],
+                "reasoning_effort": planned["reasoning_effort"],
+                "authority": planned["authority"],
+                "access_mode": planned["access_mode"],
+                "ownership": "single_repository_writer" if writer_mode == "single_writer" else "read_only",
+                "deliverable_contract": "bounded_result",
+                "verification_contract": "objective_quality_gate",
+                "failure_disposition": "freeze_and_reroute",
+                "escalation_contract": "freeze_and_reroute_on_scope_or_semantic_mismatch",
+                "handback_contract": "return_to_parent_for_acceptance",
+            }
+            return result
+
+    def complete_stage(
+        self,
+        task_ref: str,
+        lease_id: str,
+        *,
+        success: bool,
+        quality_gate: str,
+        archive: bool = False,
+        observed_role: str | None = None,
+        observed_model: str | None = None,
+        observed_effort: str | None = None,
+        observed_execution_target: str | None = None,
+        observed_source: str | None = None,
+        boundary_status: str = "unknown",
+        scope_status: str = "unknown",
+        verification_status: str = "unknown",
+    ) -> dict[str, Any]:
+        if quality_gate not in QUALITY_GATES:
+            raise ValueError("invalid quality gate")
+        if boundary_status not in BOUNDARY_STATUSES or scope_status not in SCOPE_STATUSES:
+            raise ValueError("invalid stage boundary/scope status")
+        if verification_status not in VERIFICATION_STATUSES:
+            raise ValueError("invalid stage verification status")
+        observed_values = (
+            observed_role, observed_model, observed_effort,
+            observed_execution_target, observed_source,
+        )
+        if any(value is not None for value in observed_values) and not all(
+            value is not None for value in observed_values
+        ):
+            raise ValueError("observed stage provenance must be supplied as a complete tuple")
+        if observed_role is not None and (
+            observed_role not in VALID_ROLES
+            or observed_model not in VALID_MODELS
+            or observed_effort not in VALID_EFFORTS
+            or observed_execution_target not in EXECUTION_TARGETS
+            or observed_source not in {"caller_supplied", "provider_hook"}
+        ):
+            raise ValueError("invalid observed stage provenance")
+        if archive:
+            raise ValueError("archive must be confirmed later with archive_observed after terminal acceptance")
+        with _file_lock(ledger_path(self.root)):
+            ledger = self._ledger()
+            task = ledger["tasks"].get(task_ref)
+            if not task:
+                raise ValueError("unknown task_ref")
+            lease = task.get("aggregate", {}).get("leases", {}).get(lease_id)
+            if not isinstance(lease, dict) or lease.get("status") != "active":
+                raise ValueError("stage lease is not active")
+            lease["status"] = "completed" if success else "failed"
+            lease["completed_at"] = utc_now()
+            lease["quality_gate"] = quality_gate
+            lease["boundary_status"] = boundary_status
+            lease["scope_status"] = scope_status
+            lease["verification_status"] = verification_status
+            if observed_role is not None:
+                lease["observed_execution"] = {
+                    "role": observed_role,
+                    "model": observed_model,
+                    "reasoning_effort": observed_effort,
+                    "execution_target": observed_execution_target,
+                    "source": observed_source,
+                }
+            archive_status = "not_applicable"
+            if lease["execution_target"] == "visible_task":
+                archive_status = "not_ready"
+            lease["archive_status"] = archive_status
+            if observed_role is not None:
+                self._append(
+                    ledger,
+                    {
+                        "type": "execution",
+                        "task_ref": task_ref,
+                        "route_id": task["route_id"],
+                        "event": "SubagentStop",
+                        "tool_kind": "lifecycle",
+                        "failed": not success,
+                        "transition": {
+                            "phase": "stop",
+                            "role": observed_role,
+                            "model": observed_model,
+                            "reasoning_effort": observed_effort,
+                            "stage": lease["stage"],
+                            "execution_target": observed_execution_target,
+                            "delegation_depth": lease["delegation_depth"],
+                            "lease_id": lease_id,
+                            "writer_mode": lease["writer_mode"],
+                        },
+                    },
+                    f"lease-stop:{lease_id}:{lease['status']}",
+                )
+            _atomic_write_json(ledger_path(self.root), ledger)
+            return dict(lease)
+
+    def freeze_and_reroute(
+        self,
+        task_ref: str,
+        lease_id: str,
+        remaining_task: str,
+        *,
+        decision_features: dict[str, Any] | None = None,
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not remaining_task.strip():
+            raise ValueError("remaining_task must not be empty")
+        with _file_lock(ledger_path(self.root)):
+            ledger = self._ledger()
+            task = ledger["tasks"].get(task_ref)
+            lease = (
+                task.get("aggregate", {}).get("leases", {}).get(lease_id)
+                if task else None
+            )
+            if not isinstance(lease, dict) or lease.get("status") not in {"active", "frozen"}:
+                raise ValueError("stage lease cannot be rerouted")
+            lease["status"] = "frozen"
+            lease["frozen_at"] = lease.get("frozen_at") or utc_now()
+            depth = int(lease["delegation_depth"])
+            _atomic_write_json(ledger_path(self.root), ledger)
+        reroute_ref = identity(
+            f"reroute:{task_ref}:{lease_id}:{uuid.uuid4()}", self.root
+        )
+        return self.plan_route(
+            remaining_task,
+            task_ref=reroute_ref,
+            project_identity=str(task["project"]),
+            parent_task_ref=task_ref,
+            parent_lease_id=lease_id,
+            profile=str(task["route"].get("profile") or "generic"),
+            task_state="frozen",
+            decision_features=decision_features,
+            constraints=constraints,
+            routing_context={
+                "delegation_depth": depth,
+                "caller_is_root": False,
+                "parent_lease_id": lease_id,
+            },
+        )
+
+    def transition_stage(
+        self,
+        task_ref: str,
+        lease_id: str,
+        action: str,
+        *,
+        quality_gate: str = "unknown",
+        remaining_task: str | None = None,
+        observed_role: str | None = None,
+        observed_model: str | None = None,
+        observed_effort: str | None = None,
+        observed_execution_target: str | None = None,
+        observed_source: str | None = None,
+        boundary_status: str = "unknown",
+        scope_status: str = "unknown",
+        verification_status: str = "unknown",
+    ) -> dict[str, Any]:
+        if action == "complete":
+            return self.complete_stage(
+                task_ref, lease_id, success=True, quality_gate=quality_gate,
+                observed_role=observed_role, observed_model=observed_model,
+                observed_effort=observed_effort,
+                observed_execution_target=observed_execution_target,
+                observed_source=observed_source,
+                boundary_status=boundary_status, scope_status=scope_status,
+                verification_status=verification_status,
+            )
+        if action == "fail":
+            return self.complete_stage(
+                task_ref, lease_id, success=False, quality_gate=quality_gate,
+                observed_role=observed_role, observed_model=observed_model,
+                observed_effort=observed_effort,
+                observed_execution_target=observed_execution_target,
+                observed_source=observed_source,
+                boundary_status=boundary_status, scope_status=scope_status,
+                verification_status=verification_status,
+            )
+        if action == "reroute":
+            if remaining_task is None:
+                raise ValueError("remaining_task is required for reroute")
+            return self.freeze_and_reroute(task_ref, lease_id, remaining_task)
+        with _file_lock(ledger_path(self.root)):
+            ledger = self._ledger()
+            task = ledger["tasks"].get(task_ref)
+            lease = (
+                task.get("aggregate", {}).get("leases", {}).get(lease_id)
+                if task else None
+            )
+            if not isinstance(lease, dict):
+                raise TypeError("unknown stage lease")
+            if action == "freeze":
+                if lease.get("status") != "active":
+                    raise ValueError("only an active stage lease may freeze")
+                lease["status"] = "frozen"
+                lease["frozen_at"] = utc_now()
+            elif action == "release":
+                if lease.get("status") not in {"active", "frozen", "failed"}:
+                    raise ValueError("stage lease cannot be released")
+                lease["status"] = "released"
+                lease["closed_at"] = utc_now()
+            elif action == "archive_observed":
+                if not self._visible_archive_eligible(task):
+                    raise ValueError("visible task is not archive eligible")
+                lease["archive_status"] = "eligible"
+                lease["archive_status"] = "archived"
+                self._append(
+                    ledger,
+                    {
+                        "type": "execution",
+                        "task_ref": task_ref,
+                        "route_id": task["route_id"],
+                        "event": "ArchiveObserved",
+                        "tool_kind": "lifecycle",
+                        "archive_status": "archived",
+                    },
+                    f"archive-observed:{lease_id}",
+                )
+            else:
+                raise ValueError("invalid stage transition action")
+            _atomic_write_json(ledger_path(self.root), ledger)
+            return dict(lease)
+
+    def _visible_archive_eligible(self, task: dict[str, Any]) -> bool:
+        required_ids = {
+            str(stage.get("stage_id"))
+            for stage in task["route"].get("stages", [])
+            if stage.get("required") is True
+            and stage.get("execution_target") == "visible_task"
+        }
+        leases = list(task.get("aggregate", {}).get("leases", {}).values())
+        passed_ids = {
+            str(item.get("stage_id"))
+            for item in leases
+            if item.get("status") == "completed"
+            and item.get("quality_gate") == "passed"
+            and item.get("boundary_status") == "passed"
+            and item.get("scope_status") == "passed"
+            and item.get("verification_status") == "passed"
+            and isinstance(item.get("observed_execution"), dict)
+        }
+        outcomes = [
+            event for event in _read_jsonl(events_path(self.root))
+            if event.get("type") == "outcome"
+            and event.get("task_ref") == task.get("task_ref")
+        ]
+        latest_outcome = next(
+            (
+                event for event in reversed(outcomes)
+            ),
+            None,
+        )
+        followup_sequences = [
+            int(event.get("sequence") or 0)
+            for event in outcomes
+            if isinstance(event.get("audit_followup"), dict)
+        ]
+        outstanding_audit = bool(followup_sequences) and not any(
+            int(event.get("sequence") or 0) > max(followup_sequences)
+            and event.get("stage") == "audit"
+            and event.get("status") in {"completed", "verified"}
+            and event.get("quality_gate") == "passed"
+            and event.get("objective_verification") is True
+            and event.get("boundary_status") == "passed"
+            and event.get("scope_status") == "passed"
+            and event.get("verification_status") == "passed"
+            and event.get("plan_match") == "matched"
+            and isinstance(event.get("stage_lease"), dict)
+            and event["stage_lease"].get("lease_id") in task.get("aggregate", {}).get("leases", {})
+            and task["aggregate"]["leases"][event["stage_lease"]["lease_id"]].get("stage") == "audit"
+            and task["aggregate"]["leases"][event["stage_lease"]["lease_id"]].get("status") == "completed"
+            and task["aggregate"]["leases"][event["stage_lease"]["lease_id"]].get("quality_gate") == "passed"
+            and isinstance(
+                task["aggregate"]["leases"][event["stage_lease"]["lease_id"]].get("observed_execution"),
+                dict,
+            )
+            for event in outcomes
+        )
+        return bool(
+            required_ids
+            and required_ids <= passed_ids
+            and isinstance(latest_outcome, dict)
+            and latest_outcome.get("status") in {"completed", "verified"}
+            and latest_outcome.get("quality_gate") == "passed"
+            and latest_outcome.get("objective_verification") is True
+            and latest_outcome.get("boundary_status") == "passed"
+            and latest_outcome.get("scope_status") == "passed"
+            and latest_outcome.get("verification_status") == "passed"
+            and not outstanding_audit
+        )
 
     @staticmethod
     def _tool_failed(response: Any) -> bool:
@@ -2081,6 +3211,7 @@ class RouterEngine:
             "router_experiment_runner",
             "router_research_engineer",
             "router_researcher",
+            "router_quant_researcher",
             "router_architect",
             "router_adversarial_auditor",
             "router_strategy_scout",
@@ -2269,6 +3400,18 @@ class RouterEngine:
         tool_data_fit: str = "unknown",
         failure_axis: str | None = None,
         result_signal: str = "unknown",
+        lease_id: str | None = None,
+        observed_role: str | None = None,
+        observed_model: str | None = None,
+        observed_effort: str | None = None,
+        observed_execution_target: str | None = None,
+        boundary_status: str = "unknown",
+        scope_status: str = "unknown",
+        archive_status: str | None = None,
+        local_input_tokens: int | None = None,
+        local_output_tokens: int | None = None,
+        local_token_source: str | None = None,
+        local_token_complete: bool = False,
     ) -> dict[str, Any]:
         if (
             status not in OUTCOME_STATUSES
@@ -2290,6 +3433,26 @@ class RouterEngine:
             raise ValueError("invalid failure axis")
         if result_signal not in RESULT_SIGNALS:
             raise ValueError("invalid result signal")
+        if boundary_status not in BOUNDARY_STATUSES or scope_status not in SCOPE_STATUSES:
+            raise ValueError("invalid boundary/scope status")
+        if archive_status is not None and archive_status not in ARCHIVE_STATUSES:
+            raise ValueError("invalid archive status")
+        supplied_tokens = (local_input_tokens, local_output_tokens, local_token_source)
+        if any(value is not None for value in supplied_tokens) and not all(
+            value is not None for value in supplied_tokens
+        ):
+            raise ValueError("exact local input/output tokens and source must be supplied together")
+        if local_input_tokens is not None and (
+            not isinstance(local_input_tokens, int)
+            or isinstance(local_input_tokens, bool)
+            or local_input_tokens < 0
+            or not isinstance(local_output_tokens, int)
+            or isinstance(local_output_tokens, bool)
+            or local_output_tokens < 0
+            or local_token_source not in {"provider_usage", "codex_usage", "caller_supplied"}
+            or local_token_complete is not True
+        ):
+            raise ValueError("exact local token usage must be complete and source-attributed")
         values = (replacement_role, replacement_model, replacement_effort)
         if any(x is not None for x in values) and not all(
             x is not None for x in values
@@ -2333,8 +3496,45 @@ class RouterEngine:
                     "audit",
                     "router_adversarial_auditor",
                     "xhigh",
+                    delegation_depth=int(
+                        task["route"].get("delegation_depth") or 0
+                    ),
+                    execution_target="subagent",
                 )
             agg = task["aggregate"]
+            lease = None
+            if lease_id:
+                lease = agg.get("leases", {}).get(lease_id)
+                if not isinstance(lease, dict):
+                    raise ValueError("unknown stage lease")
+            elif isinstance(agg.get("leases"), dict) and agg["leases"]:
+                lease = max(
+                    agg["leases"].values(),
+                    key=lambda item: str(item.get("completed_at") or item.get("started_at") or ""),
+                )
+                lease_id = str(lease.get("lease_id"))
+            if archive_status in {"eligible", "requested", "archived"} and (
+                not isinstance(lease, dict)
+                or lease.get("archive_status") != archive_status
+            ):
+                raise ValueError("archive status requires matching observed lease state")
+            if (
+                stage == "audit"
+                and isinstance(existing_followup, dict)
+                and (
+                    not isinstance(lease, dict)
+                    or lease.get("stage_id") != existing_followup.get("stage_id")
+                    or lease.get("status") != "completed"
+                    or lease.get("quality_gate") != "passed"
+                    or lease.get("boundary_status") != "passed"
+                    or lease.get("scope_status") != "passed"
+                    or lease.get("verification_status") != "passed"
+                    or not isinstance(lease.get("observed_execution"), dict)
+                )
+            ):
+                raise ValueError(
+                    "dynamic audit outcome requires a completed, fully gated observed audit lease"
+                )
             kinds = sorted(
                 set((verification_kinds or []) + list(agg["verification_kinds"]))
             )
@@ -2350,8 +3550,21 @@ class RouterEngine:
                 else None
             )
             route_fit = self._derive_route_fit(model_fit, effort_fit, route_fit)
+            planned_stage = next(
+                (item for item in route_stages if item.get("stage") == stage),
+                None,
+            )
+            if planned_stage is None and stage == "audit" and existing_followup:
+                planned_stage = dict(existing_followup)
+            if (
+                isinstance(lease, dict)
+                and isinstance(planned_stage, dict)
+                and lease.get("stage_id") != planned_stage.get("stage_id")
+            ):
+                raise ValueError("stage lease does not match the selected planned stage")
+            planned = planned_stage or task["route"]
             derived_axis = self._derive_failure_axis(
-                task["route"], replacement, context_fit, tool_data_fit, status
+                planned, replacement, context_fit, tool_data_fit, status
             )
             if failure_axis is not None and derived_axis in {
                 "model_capability", "reasoning_budget", "context", "tool_data", "confounded"
@@ -2360,6 +3573,125 @@ class RouterEngine:
                     f"failure_axis {failure_axis} conflicts with derived {derived_axis}"
                 )
             failure_axis = failure_axis or derived_axis
+            latest_lifecycle = None
+            lifecycles = [
+                value for value in agg.get("lifecycle", {}).values()
+                if isinstance(value, dict)
+                and value.get("status") == "completed"
+                and (stage is None or value.get("stage") == stage)
+            ]
+            if lifecycles:
+                latest_lifecycle = max(
+                    lifecycles,
+                    key=lambda value: int(
+                        value.get("completed_sequence") or value.get("started_sequence") or 0
+                    ),
+                )
+            lease_observed = (
+                lease.get("observed_execution")
+                if isinstance((lease or {}).get("observed_execution"), dict)
+                else {}
+            )
+            explicit_observed = any(
+                value is not None
+                for value in (
+                    observed_role, observed_model, observed_effort,
+                    observed_execution_target,
+                )
+            )
+            if explicit_observed and not all(
+                value is not None
+                for value in (
+                    observed_role, observed_model, observed_effort,
+                    observed_execution_target,
+                )
+            ):
+                raise ValueError("observed execution provenance must be supplied as a complete tuple")
+            observed = {
+                "role": str(
+                    observed_role
+                    or lease_observed.get("role")
+                    or (latest_lifecycle or {}).get("role")
+                    or "unknown"
+                ),
+                "model": str(
+                    observed_model
+                    or lease_observed.get("model")
+                    or (latest_lifecycle or {}).get("model")
+                    or "unknown"
+                ),
+                "reasoning_effort": str(
+                    observed_effort
+                    or lease_observed.get("reasoning_effort")
+                    or (latest_lifecycle or {}).get("reasoning_effort")
+                    or "unknown"
+                ),
+                "execution_target": str(
+                    observed_execution_target
+                    or lease_observed.get("execution_target")
+                    or ("subagent" if latest_lifecycle else None)
+                    or "unknown"
+                ),
+            }
+            observed["role"] = (
+                observed["role"] if observed["role"] in VALID_ROLES else "unknown"
+            )
+            observed["model"] = (
+                observed["model"] if observed["model"] in VALID_MODELS else "unknown"
+            )
+            observed["reasoning_effort"] = (
+                observed["reasoning_effort"]
+                if observed["reasoning_effort"] in VALID_EFFORTS else "unknown"
+            )
+            observed["execution_target"] = (
+                observed["execution_target"]
+                if observed["execution_target"] in EXECUTION_TARGETS else "unknown"
+            )
+            comparisons = {
+                "role": planned.get("role"),
+                "model": planned.get("model"),
+                "reasoning_effort": planned.get("reasoning_effort"),
+                "execution_target": planned.get("execution_target"),
+            }
+            complete_observation = all(value != "unknown" for value in observed.values())
+            plan_match = (
+                "unknown" if not complete_observation
+                else "matched" if all(observed[key] == comparisons.get(key) for key in observed)
+                else "deviated"
+            )
+            delegation_depth = int(
+                (lease or {}).get("delegation_depth")
+                or planned.get("delegation_depth")
+                or task["route"].get("delegation_depth")
+                or 0
+            )
+            verification_status = (
+                "passed" if quality_gate == "passed"
+                else "failed" if quality_gate == "failed"
+                else "provisional" if quality_gate == "provisional"
+                else "unknown"
+            )
+            if archive_status is None:
+                archive_status = str((lease or {}).get("archive_status") or (
+                    "not_ready" if task["route"].get("execution_target") == "visible_task"
+                    else "not_applicable"
+                ))
+            local_tokens = None
+            if local_input_tokens is not None and local_output_tokens is not None:
+                total_tokens = local_input_tokens + local_output_tokens
+                local_tokens = {
+                    "input": local_input_tokens,
+                    "output": local_output_tokens,
+                    "total": total_tokens,
+                    "source": local_token_source,
+                    "complete": bool(local_token_complete),
+                }
+                token_band = (
+                    "low" if total_tokens < 2000
+                    else "medium" if total_tokens < 8000
+                    else "high" if total_tokens < 20000
+                    else "very_high"
+                )
             duration = max(
                 0,
                 time.time()
@@ -2396,7 +3728,21 @@ class RouterEngine:
                 "failure_axis": failure_axis,
                 "result_signal": result_signal,
                 "stage_source": stage_source,
+                "dispatch_mode": str(task["route"].get("execution_target") or "direct"),
+                "observed_execution": observed,
+                "plan_match": plan_match,
+                "boundary_status": boundary_status,
+                "scope_status": scope_status,
+                "verification_status": verification_status,
+                "archive_status": archive_status,
+                "delegation_depth": delegation_depth,
+                "stage_lease": {
+                    "lease_id": lease_id or "unknown",
+                    "status": str((lease or {}).get("status") or "unknown"),
+                },
             }
+            if local_tokens is not None:
+                outcome["local_tokens"] = local_tokens
             if stage is not None:
                 outcome["stage"] = stage
             if audit_followup is not None and "audit" not in {
@@ -2424,9 +3770,84 @@ class RouterEngine:
         axis = shadow.get("axis")
         candidate = shadow.get("candidate")
         replacement = outcome.get("replacement") or {}
-        actual = task["route"].get(axis)
+        proposal = _proposal_by_id(str(shadow["proposal_id"]), self.root)
+        observed = (
+            outcome.get("observed_execution")
+            if outcome.get("schema_version") == 4
+            and isinstance(outcome.get("observed_execution"), dict)
+            else task["route"]
+        )
+        actual = observed.get(axis)
+        fixed_context = {
+            "role": observed.get("role"),
+            "model": observed.get("model"),
+            "reasoning_effort": observed.get("reasoning_effort"),
+            "execution_target": observed.get("execution_target", "legacy"),
+            "delegation_depth": outcome.get(
+                "delegation_depth", task["route"].get("delegation_depth", "legacy")
+            ),
+            "stage": outcome.get("stage", "legacy"),
+        }
+        fixed_mismatch = isinstance(proposal.get("fixed"), dict) and any(
+            str(fixed_context.get(key)) != str(value)
+            for key, value in proposal["fixed"].items()
+        )
+        route = task["route"]
+        primary_candidates = [
+            stage
+            for stage in route.get("stages") or []
+            if all(
+                str(stage.get(key)) == str(route.get(key))
+                for key in (
+                    "role",
+                    "model",
+                    "reasoning_effort",
+                    "execution_target",
+                )
+            )
+        ]
+        primary_stage = primary_candidates[0] if len(primary_candidates) == 1 else None
+        lease_summary = outcome.get("stage_lease")
+        lease = None
+        if isinstance(lease_summary, dict):
+            lease = task.get("aggregate", {}).get("leases", {}).get(
+                lease_summary.get("lease_id")
+            )
+        delegated_execution_invalid = (
+            route.get("execution_target") != "direct"
+            and (
+                not isinstance(primary_stage, dict)
+                or outcome.get("stage") != primary_stage.get("stage")
+                or not isinstance(lease, dict)
+                or lease.get("status") != "completed"
+                or lease.get("stage_id") != primary_stage.get("stage_id")
+                or not isinstance(lease.get("observed_execution"), dict)
+            )
+        )
+        learning = load_policy(self.root)["learning"]
         if (
-            outcome.get("failure_axis") in {"confounded", "context", "tool_data"}
+            fixed_mismatch
+            or route.get("dispatch_ready") is False
+            or outcome.get("schema_version") == 4
+            and (
+                not outcome.get("objective_verification")
+                or not outcome.get("user_confirmed")
+                or outcome.get("status") not in {"escalated", "overridden"}
+                or outcome.get("quality_gate") not in {"passed", "failed"}
+                or float(outcome.get("confidence") or 0)
+                < learning["minimum_confidence"]
+                or outcome.get("plan_match") != "matched"
+                or outcome.get("boundary_status") != "passed"
+                or outcome.get("scope_status") != "passed"
+                or outcome.get("verification_status") not in {"passed", "failed"}
+                or outcome.get("context_fit") != "adequate"
+                or outcome.get("tool_data_fit") != "adequate"
+                or not isinstance(primary_stage, dict)
+                or outcome.get("stage")
+                not in {None, primary_stage.get("stage")}
+                or delegated_execution_invalid
+            )
+            or outcome.get("failure_axis") in {"confounded", "context", "tool_data"}
             or outcome.get("context_fit") == "deficient"
             or outcome.get("tool_data_fit") == "deficient"
         ):
@@ -2531,6 +3952,7 @@ def create_route_record(
                 "verification_kinds": [],
                 "transitions": [],
                 "lifecycle": {},
+                "leases": {},
             },
         }
         ledger["tasks"][reference] = task_record
@@ -2574,6 +3996,18 @@ def record_outcome(
     tool_data_fit: str = "unknown",
     failure_axis: str | None = None,
     result_signal: str = "unknown",
+    lease_id: str | None = None,
+    observed_role: str | None = None,
+    observed_model: str | None = None,
+    observed_effort: str | None = None,
+    observed_execution_target: str | None = None,
+    boundary_status: str = "unknown",
+    scope_status: str = "unknown",
+    archive_status: str | None = None,
+    local_input_tokens: int | None = None,
+    local_output_tokens: int | None = None,
+    local_token_source: str | None = None,
+    local_token_complete: bool = False,
     root: Path | None = None,
 ) -> dict[str, Any]:
     routes, _ = _events_by_type(root)
@@ -2603,6 +4037,18 @@ def record_outcome(
         tool_data_fit=tool_data_fit,
         failure_axis=failure_axis,
         result_signal=result_signal,
+        lease_id=lease_id,
+        observed_role=observed_role,
+        observed_model=observed_model,
+        observed_effort=observed_effort,
+        observed_execution_target=observed_execution_target,
+        boundary_status=boundary_status,
+        scope_status=scope_status,
+        archive_status=archive_status,
+        local_input_tokens=local_input_tokens,
+        local_output_tokens=local_output_tokens,
+        local_token_source=local_token_source,
+        local_token_complete=local_token_complete,
     )
 
 
@@ -2627,23 +4073,63 @@ def learning_proposals(root: Path | None = None) -> list[dict[str, Any]]:
             or not outcome.get("user_confirmed")
             or outcome.get("status") not in {"escalated", "overridden"}
             or outcome.get("quality_gate") not in {"passed", "failed"}
+            or route.get("dispatch_ready") is False
             or float(outcome.get("confidence") or 0) < learning["minimum_confidence"]
+            or (
+                outcome.get("schema_version") == 4
+                and (
+                    outcome.get("plan_match") != "matched"
+                    or outcome.get("boundary_status") != "passed"
+                    or outcome.get("scope_status") != "passed"
+                    or outcome.get("verification_status") not in {"passed", "failed"}
+                    or outcome.get("context_fit") != "adequate"
+                    or outcome.get("tool_data_fit") != "adequate"
+                )
+            )
         ):
             continue
+        observed = (
+            outcome.get("observed_execution")
+            if outcome.get("schema_version") == 4
+            and isinstance(outcome.get("observed_execution"), dict)
+            else route
+        )
+        primary_candidates = [
+            stage for stage in route.get("stages") or []
+            if all(
+                str(stage.get(key)) == str(route.get(key))
+                for key in ("role", "model", "reasoning_effort", "execution_target")
+            )
+        ]
+        if outcome.get("schema_version") == 4:
+            if len(primary_candidates) != 1:
+                continue
+            primary_stage = primary_candidates[0]
+            if outcome.get("stage") not in {None, primary_stage.get("stage")}:
+                continue
+            if route.get("execution_target") != "direct":
+                lease = outcome.get("stage_lease")
+                if (
+                    outcome.get("stage") != primary_stage.get("stage")
+                    or not isinstance(lease, dict)
+                    or lease.get("lease_id") == "unknown"
+                    or lease.get("status") != "completed"
+                ):
+                    continue
+        else:
+            primary_stage = primary_candidates[0] if len(primary_candidates) == 1 else None
         changed_axes = {
             axis
             for axis in ("role", "model", "reasoning_effort")
-            if str(route.get(axis)) != str(replacement.get(axis))
+            if str(observed.get(axis)) != str(replacement.get(axis))
         }
-        for axis in ("role", "model", "reasoning_effort"):
-            before, after = str(route.get(axis)), str(replacement.get(axis))
+        for axis in ("model", "reasoning_effort"):
+            before, after = str(observed.get(axis)), str(replacement.get(axis))
             if before == after:
                 continue
             if axis == "model" and changed_axes != {"model"}:
                 continue
             if axis == "reasoning_effort" and changed_axes != {"reasoning_effort"}:
-                continue
-            if axis == "role" and "role" not in changed_axes:
                 continue
             failure_axis = outcome.get("failure_axis")
             if failure_axis in {"confounded", "context", "tool_data"}:
@@ -2656,40 +4142,61 @@ def learning_proposals(root: Path | None = None) -> list[dict[str, Any]]:
                 continue
             profile_config = load_profile(str(route.get("profile")))
             try:
-                if axis == "role":
-                    _role_config(profile_config, after)
-                elif axis == "model":
+                if axis == "model":
                     _validate_route_tuple(
                         profile_config,
-                        str(route.get("role")),
+                        str(observed.get("role")),
                         after,
-                        str(route.get("reasoning_effort")),
+                        str(observed.get("reasoning_effort")),
                     )
                 else:
                     _validate_route_tuple(
                         profile_config,
-                        str(route.get("role")),
-                        str(route.get("model")),
+                        str(observed.get("role")),
+                        str(observed.get("model")),
                         after,
                     )
             except ValueError:
                 continue
+            fixed = {
+                "role": str(observed.get("role")),
+                "execution_target": str(observed.get("execution_target", "legacy")),
+                "delegation_depth": str(
+                    outcome.get("delegation_depth", route.get("delegation_depth", "legacy"))
+                ),
+                "stage": str(
+                    primary_stage.get("stage") if isinstance(primary_stage, dict) else "legacy"
+                ),
+            }
+            fixed[
+                "reasoning_effort" if axis == "model" else "model"
+            ] = str(
+                observed.get("reasoning_effort" if axis == "model" else "model")
+            )
+            fixed_covariates = [
+                f"{name}={fixed[name]}" for name in sorted(fixed)
+            ]
             key = "|".join(
                 [
                     str(route.get("profile")),
                     str(route.get("task_class")),
+                    str(outcome.get("dispatch_mode", route.get("execution_target", "legacy"))),
+                    str(outcome.get("delegation_depth", route.get("delegation_depth", "legacy"))),
+                    *fixed_covariates,
                     axis,
                     before,
                     after,
                 ]
             )
-            grouped.setdefault(key, []).append((route, outcome, axis, before, after))
+            grouped.setdefault(key, []).append(
+                (route, outcome, axis, before, after, fixed)
+            )
     result = []
     for key, items in grouped.items():
         sessions = {str(x[0].get("session")) for x in items}
         projects = {str(x[0].get("project")) for x in items}
         confidence = sum(float(x[1]["confidence"]) for x in items) / len(items)
-        route, _, axis, before, after = items[-1]
+        route, _, axis, before, after, fixed = items[-1]
         regression = any(x[1].get("high_risk_regression") for x in items)
         eligible = (
             len(items) >= learning["minimum_replacement_outcomes"]
@@ -2720,6 +4227,8 @@ def learning_proposals(root: Path | None = None) -> list[dict[str, Any]]:
                 "direction": _axis_direction(axis, before, after),
                 "profile": route.get("profile"),
                 "task_class": route.get("task_class"),
+                "stage": fixed["stage"],
+                "fixed": fixed,
                 "from": before,
                 "to": after,
                 "replacement_outcomes": len(items),
@@ -2804,6 +4313,8 @@ def confirm_policy_change(
             "proposal_id": proposal_id,
             "profile": proposal["profile"],
             "task_class": proposal["task_class"],
+            "stage": proposal["stage"],
+            "fixed": dict(proposal["fixed"]),
             "axis": proposal["axis"],
             "to": proposal["to"],
             "scope": proposal["scope"],
@@ -2816,6 +4327,7 @@ def confirm_policy_change(
                 x.get("profile") == override["profile"]
                 and x.get("task_class") == override["task_class"]
                 and x.get("axis") == override["axis"]
+                and x.get("fixed") == override["fixed"]
             )
         ] + [override]
         policy["revision"] = int(policy.get("revision") or 1) + 1
@@ -2856,11 +4368,27 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
     escalation = sum(x.get("status") == "escalated" for x in latest.values())
     under = sum(x.get("route_fit") == "under_routed" for x in known)
     over = sum(x.get("route_fit") == "over_routed" for x in known)
+
+    def actual_model_effort(outcome: dict[str, Any]) -> tuple[str, str]:
+        route = routes.get(str(outcome.get("route_id")), {})
+        if outcome.get("schema_version") != 4:
+            return (
+                str(route.get("model") or "unknown"),
+                str(route.get("reasoning_effort") or "unknown"),
+            )
+        observed = outcome.get("observed_execution")
+        if not isinstance(observed, dict) or not all(
+            observed.get(key) != "unknown"
+            for key in ("role", "model", "reasoning_effort", "execution_target")
+        ):
+            return "unknown", "unknown"
+        return str(observed["model"]), str(observed["reasoning_effort"])
+
     unnecessary = sum(
         x.get("route_fit") == "over_routed"
         and (
-            routes.get(str(x.get("route_id")), {}).get("model") == "gpt-5.6-sol"
-            or routes.get(str(x.get("route_id")), {}).get("reasoning_effort") == "xhigh"
+            actual_model_effort(x)[0] == "gpt-5.6-sol"
+            or actual_model_effort(x)[1] == "xhigh"
         )
         for x in known
     )
@@ -2898,9 +4426,9 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
         route = routes.get(route_id)
         if not route or outcome.get("quality_gate") not in {"passed", "failed"}:
             continue
+        actual_model, actual_effort = actual_model_effort(outcome)
         key = "|".join(
-            str(route.get(field) or "unknown")
-            for field in ("task_class", "model", "reasoning_effort")
+            (str(route.get("task_class") or "unknown"), actual_model, actual_effort)
         )
         item = success_by_tuple.setdefault(key, {"passed": 0, "total": 0, "rate": None})
         item["total"] += 1
@@ -2974,7 +4502,8 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
                 and right.get("quality_gate") == "passed"
             )
     return {
-        "schema_version": 3,
+        "schema_version": 4,
+        "release_version": "1.3.0",
         "capture_coverage": round(len(latest) / len(routes), 4) if routes else 0.0,
         "known_quality_coverage": round(total / len(routes), 4) if routes else 0.0,
         "route_success": round(success / total, 4) if total else None,
@@ -3088,7 +4617,7 @@ def hook_context(
         return {
             "hookSpecificOutput": {
                 "hookEventName": event,
-                "additionalContext": "Codex Adaptive Router v1.2.0 is active; capability floors are enforced and policy changes remain human-confirmed.",
+                "additionalContext": "Codex Adaptive Router v1.3.0 is active; Thin Root capability/quality floors, recursive dispatch leases, and human-confirmed policy changes are enforced.",
             }
         }
     if event == "UserPromptSubmit":
@@ -3105,7 +4634,7 @@ def hook_context(
         return {
             "hookSpecificOutput": {
                 "hookEventName": event,
-                "additionalContext": f"Adaptive Router task_ref={task['task_ref']}; initial route={route['role']}; model={route['model']}; effort={route['reasoning_effort']}. Call route_plan with this task_ref to confirm or refine without rerouting. User constraints win; unresolved semantics escalate to Sol.",
+                "additionalContext": f"Adaptive Router task_ref={task['task_ref']}; route={route['role']}; model={route['model']}; effort={route['reasoning_effort']}; target={route['execution_target']}; dispatch={'ready' if route['dispatch_ready'] else route['dispatch_blocker']}. Confirm this immutable Route Plan v3 with route_plan. Claim delegated stages before work; never bypass a blocker; unresolved semantics escalate to Sol.",
             }
         }
     if event == "SubagentStart":
