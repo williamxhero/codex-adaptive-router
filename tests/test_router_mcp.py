@@ -25,11 +25,17 @@ class RouterMcpTests(unittest.TestCase):
         signal = tools["record_route_outcome"]["inputSchema"]["properties"][
             "result_signal"
         ]
+        outcome_schema = tools["record_route_outcome"]["inputSchema"]["properties"]
         self.assertEqual(
             set(signal["enum"]),
             {"normal", "exceptional_positive", "exceptional_negative", "unknown"},
         )
         self.assertIn("raw metrics", signal["description"])
+        self.assertIn("lifecycle", outcome_schema["stage"]["description"])
+        self.assertIn(
+            "stop alone is never verification",
+            outcome_schema["objective_verification"]["description"],
+        )
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
             os.environ, {"CODEX_ADAPTIVE_ROUTER_DATA": directory}
         ):

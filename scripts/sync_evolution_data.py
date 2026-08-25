@@ -284,6 +284,10 @@ def _normalise_metrics_event(record: dict[str, Any]) -> dict[str, Any]:
         value.setdefault("failure_axis", "none")
         value.setdefault("result_signal", "unknown")
         value.setdefault("stage_source", "unknown")
+    elif value.get("type") == "execution" and isinstance(
+        value.get("transition"), dict
+    ):
+        value["transition"].setdefault("stage", "unknown")
     return value
 
 

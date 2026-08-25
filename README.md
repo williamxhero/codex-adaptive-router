@@ -54,7 +54,7 @@ codex-adaptive-router/
 User task
   -> UserPromptSubmit creates task_ref + initial route
   -> route_plan(task_ref=...) confirms it without rerouting
-  -> tool and subagent hooks aggregate execution evidence
+  -> tool and subagent hooks uniquely associate bounded agent lifecycles to planned stages
   -> Stop creates a provisional outcome; later verification/correction enriches it
   -> objective, user-confirmed replacement evidence creates axis-specific proposals
   -> eligible tasks compare incumbent + candidate without enforcing the candidate
@@ -69,7 +69,7 @@ Hooks and the MCP server now write to one canonical runtime root: `CODEX_ADAPTIV
 
 ### v1.2.0 Capability–Budget Separation
 
-Profiles use schema v3 with explicit authority, capability floor, legal models, independent effort bands, and Sol escalation conditions. Decision Features v2 accepts any documented subset and deterministically fills the remainder. Outcome Intelligence v3 separates model, effort, context, tool-data, and execution failure axes; multi-axis replacements are confounded rather than misattributed. Stage completion is validated against the stored plan, adjacent objectively verified stages drive handoff metrics, and model/effort under/over rates use independent known-fit denominators.
+Profiles use schema v3 with explicit authority, capability floor, legal models, independent effort bands, and Sol escalation conditions. Decision Features v2 accepts any documented subset and deterministically fills the remainder. Outcome Intelligence v3 separates model, effort, context, tool-data, and execution failure axes; multi-axis replacements are confounded rather than misattributed. Agent lifecycle hooks associate only a unique role/model/effort match to an unfinished required stage using HMAC identity; stop records completion but never objective verification. Stage completion is validated against the stored plan, adjacent objectively verified stages drive handoff metrics, and model/effort under/over rates use independent known-fit denominators.
 
 See [Capability–Budget ADR](docs/adr/0001-capability-budget-separation.md) and [Outcome Intelligence](docs/outcome-intelligence.md).
 

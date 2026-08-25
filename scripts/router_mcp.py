@@ -130,7 +130,7 @@ TOOLS = [
     },
     {
         "name": "record_route_outcome",
-        "description": "Record privacy-bounded Outcome Intelligence v3 evidence. A supplied stage must belong to the task plan; exceptional_positive may return a required Sol XHigh audit follow-up without rewriting the route. Failure-axis attribution is checked against the replacement tuple.",
+        "description": "Record privacy-bounded Outcome Intelligence v3 evidence. A supplied stage must belong to the task plan; when omitted, a uniquely completed lifecycle-associated stage is preferred before single-stage inference. SubagentStop never implies objective verification. exceptional_positive may return a required Sol XHigh audit follow-up without rewriting the route.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -147,7 +147,10 @@ TOOLS = [
                 },
                 "route_fit": {"type": "string", "enum": sorted(router_core.ROUTE_FITS)},
                 "verification_kinds": {"type": "array", "items": {"type": "string"}},
-                "objective_verification": {"type": "boolean"},
+                "objective_verification": {
+                    "type": "boolean",
+                    "description": "True only for explicit or privacy-bounded objective verification evidence; agent stop alone is never verification.",
+                },
                 "user_confirmed": {"type": "boolean"},
                 "high_risk_regression": {"type": "boolean"},
                 "replacement_role": {"type": "string"},
@@ -155,7 +158,11 @@ TOOLS = [
                 "replacement_effort": {"type": "string", "enum": EFFORTS},
                 "token_band": {"type": "string", "enum": BANDS},
                 "cost_band": {"type": "string", "enum": BANDS},
-                "stage": {"type": "string", "enum": sorted(router_core.STAGE_NAMES)},
+                "stage": {
+                    "type": "string",
+                    "enum": sorted(router_core.STAGE_NAMES),
+                    "description": "Optional explicit completed stage. If omitted, the Router may use one uniquely matched recent completed agent lifecycle stage; ambiguity remains unknown.",
+                },
                 "model_fit": {"type": "string", "enum": sorted(router_core.MODEL_EFFORT_FITS)},
                 "effort_fit": {"type": "string", "enum": sorted(router_core.MODEL_EFFORT_FITS)},
                 "context_fit": {"type": "string", "enum": sorted(router_core.CONTEXT_TOOL_FITS)},

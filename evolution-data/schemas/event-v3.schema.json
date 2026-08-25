@@ -35,7 +35,7 @@
     "tool_kind": {"enum": ["shell", "edit", "agent", "mcp", "local", "lifecycle"]},
     "failed": {"type": "boolean"},
     "verification_kind": {"type": ["string", "null"]},
-    "transition": {"type": "object", "required": ["phase", "role", "model", "reasoning_effort"], "properties": {"phase": {"enum": ["start", "stop"]}, "role": {"type": "string"}, "model": {"type": "string"}, "reasoning_effort": {"type": "string"}}, "additionalProperties": false},
+    "transition": {"type": "object", "required": ["phase", "role", "model", "reasoning_effort"], "properties": {"phase": {"enum": ["start", "stop"]}, "role": {"type": "string"}, "model": {"type": "string"}, "reasoning_effort": {"type": "string"}, "stage": {"enum": ["frame", "collect", "implement", "verify", "synthesize", "audit", "unknown"]}}, "additionalProperties": false},
     "status": {"enum": ["completed", "verified", "failed", "corrected", "escalated", "overridden"]},
     "quality_gate": {"enum": ["unknown", "provisional", "passed", "failed"]},
     "route_fit": {"enum": ["unknown", "adequate", "under_routed", "over_routed"]},
@@ -58,7 +58,7 @@
     "tool_data_fit": {"enum": ["adequate", "deficient", "unknown"]},
     "failure_axis": {"enum": ["model_capability", "reasoning_budget", "context", "tool_data", "execution", "none", "confounded"]},
     "result_signal": {"enum": ["normal", "exceptional_positive", "exceptional_negative", "unknown"]},
-    "stage_source": {"enum": ["caller_supplied", "single_stage_inferred", "unknown"]},
+    "stage_source": {"enum": ["caller_supplied", "lifecycle_inferred", "single_stage_inferred", "unknown"]},
     "audit_followup": {"type": "object", "required": ["stage", "authority", "role", "capability_floor", "model", "reasoning_effort", "required"], "properties": {"stage": {"const": "audit"}, "authority": {"const": "audit"}, "role": {"const": "router_adversarial_auditor"}, "capability_floor": {"const": "gpt-5.6-sol"}, "model": {"const": "gpt-5.6-sol"}, "reasoning_effort": {"const": "xhigh"}, "required": {"const": true}}, "additionalProperties": false}
   },
   "allOf": [

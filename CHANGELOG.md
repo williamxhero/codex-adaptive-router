@@ -11,3 +11,4 @@
 - Preserve v1.1.1 canonical data-root, task-ref idempotency, read-only legacy import, Windows process, and privacy behavior.
 - Keep `direct` stages executable as Root Sol Medium and delegate higher-budget Sol decisions to named specialists.
 - Add exceptional-result audit follow-ups, validated stage attribution, verified adjacent-stage handoff metrics, and per-axis fit-rate denominators.
+- Associate privacy-bounded agent lifecycles to uniquely matching required stages without treating subagent stop as objective verification.

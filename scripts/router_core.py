@@ -42,7 +42,12 @@ FAILURE_AXES = {
     "execution", "none", "confounded",
 }
 RESULT_SIGNALS = {"normal", "exceptional_positive", "exceptional_negative", "unknown"}
-STAGE_SOURCES = {"caller_supplied", "single_stage_inferred", "unknown"}
+STAGE_SOURCES = {
+    "caller_supplied",
+    "lifecycle_inferred",
+    "single_stage_inferred",
+    "unknown",
+}
 BANDS = {"unknown", "low", "medium", "high", "very_high"}
 FEATURE_VALUES = {
     "operation_mode": {
@@ -202,7 +207,7 @@ def validate_decision_features(value: Any) -> dict[str, Any]:
 
 def _validate_transition(value: Any) -> None:
     transition = _strict_object(
-        value, {"phase", "role", "model", "reasoning_effort"},
+        value, {"phase", "role", "model", "reasoning_effort", "stage"},
         {"phase", "role", "model", "reasoning_effort"}, "transition"
     )
     if transition["phase"] not in {"start", "stop"}:
@@ -213,6 +218,8 @@ def _validate_transition(value: Any) -> None:
         raise ValueError("transition.model is invalid")
     if transition["reasoning_effort"] not in VALID_EFFORTS | {"unknown"}:
         raise ValueError("transition.reasoning_effort is invalid")
+    if "stage" in transition and transition["stage"] not in STAGE_NAMES | {"unknown"}:
+        raise ValueError("transition.stage is invalid")
 
 
 def _validate_replacement(value: Any) -> None:
@@ -1484,8 +1491,17 @@ class RouterEngine:
                         "retry_count": 0,
                         "verification_kinds": [],
                         "transitions": [],
+                        "lifecycle": {},
                     },
                 }
+        for task in value["tasks"].values():
+            aggregate = task.setdefault("aggregate", {})
+            aggregate.setdefault("tool_count", 0)
+            aggregate.setdefault("failure_count", 0)
+            aggregate.setdefault("retry_count", 0)
+            aggregate.setdefault("verification_kinds", [])
+            aggregate.setdefault("transitions", [])
+            aggregate.setdefault("lifecycle", {})
         return value
 
     def _append(
@@ -1594,6 +1610,7 @@ class RouterEngine:
                     "retry_count": 0,
                     "verification_kinds": [],
                     "transitions": [],
+                    "lifecycle": {},
                 },
             }
             ledger["tasks"][key] = task
@@ -1846,6 +1863,7 @@ class RouterEngine:
                         "retry_count": 0,
                         "verification_kinds": [],
                         "transitions": [],
+                        "lifecycle": {},
                     },
                 }
                 ledger["tasks"][reference] = task_record
@@ -1924,6 +1942,135 @@ class RouterEngine:
         }
 
     @staticmethod
+    def _raw_agent_identity(payload: dict[str, Any]) -> str | None:
+        sources = [payload]
+        for key in ("tool_input", "tool_response"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                sources.append(value)
+                structured = value.get("structuredContent")
+                if isinstance(structured, dict):
+                    sources.append(structured)
+        for source in sources:
+            for key in ("agent_id", "agentId", "subagent_id", "subagentId"):
+                value = source.get(key)
+                if isinstance(value, (str, int)) and str(value):
+                    return str(value)
+        return None
+
+    def _required_task_stages(self, task: dict[str, Any]) -> list[dict[str, Any]]:
+        stages = [
+            dict(item)
+            for item in task["route"].get("stages", [])
+            if isinstance(item, dict) and item.get("required") is True
+        ]
+        followup = self._audit_followup_for_task(str(task["task_ref"]))
+        if followup and not any(item.get("stage") == "audit" for item in stages):
+            stages.append(followup)
+        return stages
+
+    def _associate_lifecycle_stage(
+        self,
+        task: dict[str, Any],
+        transition: dict[str, Any],
+        agent_hash: str,
+        sequence: int,
+    ) -> str:
+        aggregate = task["aggregate"]
+        lifecycle = aggregate.setdefault("lifecycle", {})
+        previous = lifecycle.get(agent_hash)
+        required_stages = self._required_task_stages(task)
+        stage_by_name = {
+            str(item["stage"]): item for item in required_stages
+        }
+        stage = str(previous.get("stage", "unknown")) if previous else "unknown"
+        if stage in stage_by_name:
+            planned = stage_by_name[stage]
+            for key in ("role", "model", "reasoning_effort"):
+                observed = transition[key]
+                if observed != "unknown" and observed != planned[key]:
+                    stage = "unknown"
+                    break
+        if stage == "unknown":
+            unavailable = {
+                str(state.get("stage"))
+                for identity_state, state in lifecycle.items()
+                if identity_state != agent_hash
+                and isinstance(state, dict)
+                and state.get("stage") in STAGE_NAMES
+            }
+            unavailable.update(
+                str(event["stage"])
+                for event in _read_jsonl(events_path(self.root))
+                if event.get("type") == "outcome"
+                and event.get("task_ref") == task["task_ref"]
+                and event.get("stage") in STAGE_NAMES
+            )
+            candidates = []
+            for planned in required_stages:
+                if planned["stage"] in unavailable:
+                    continue
+                if transition["role"] != planned["role"]:
+                    continue
+                if transition["model"] != "unknown" and transition["model"] != planned["model"]:
+                    continue
+                if (
+                    transition["reasoning_effort"] != "unknown"
+                    and transition["reasoning_effort"] != planned["reasoning_effort"]
+                ):
+                    continue
+                candidates.append(str(planned["stage"]))
+            if len(candidates) == 1:
+                stage = candidates[0]
+        status = (
+            "completed"
+            if transition["phase"] == "stop"
+            or previous and previous.get("status") == "completed"
+            else "started"
+        )
+        state = {
+            "stage": stage,
+            "role": transition["role"],
+            "model": transition["model"],
+            "reasoning_effort": transition["reasoning_effort"],
+            "status": status,
+        }
+        if previous and isinstance(previous.get("started_sequence"), int):
+            state["started_sequence"] = previous["started_sequence"]
+        elif transition["phase"] == "start":
+            state["started_sequence"] = sequence
+        if status == "completed":
+            state["completed_sequence"] = (
+                previous.get("completed_sequence", sequence) if previous else sequence
+            )
+        lifecycle[agent_hash] = state
+        return stage
+
+    @staticmethod
+    def _recent_completed_lifecycle_stage(task: dict[str, Any]) -> str | None:
+        lifecycle = task.get("aggregate", {}).get("lifecycle", {})
+        completed = [
+            state
+            for state in lifecycle.values()
+            if isinstance(state, dict)
+            and state.get("status") == "completed"
+            and isinstance(state.get("completed_sequence"), int)
+        ]
+        if not completed:
+            return None
+        latest_sequence = max(int(state["completed_sequence"]) for state in completed)
+        latest_stages = {
+            str(state.get("stage", "unknown"))
+            for state in completed
+            if state["completed_sequence"] == latest_sequence
+        }
+        return (
+            next(iter(latest_stages))
+            if len(latest_stages) == 1 and latest_stages <= STAGE_NAMES
+            else None
+        )
+
+    @staticmethod
     def _safe_role(value: Any) -> str:
         roles = {
             "direct",
@@ -1995,16 +2142,29 @@ class RouterEngine:
                     verification_kind=kind,
                 )
                 transition = self._transition_from_tool(payload)
-                if transition:
-                    agg["transitions"].append(transition)
-                    sanitized["transition"] = transition
             elif event in {"SubagentStart", "SubagentStop"}:
                 transition = {
                     "phase": "start" if event.endswith("Start") else "stop",
-                    "role": self._safe_role(payload.get("agent_type")),
+                    "role": self._safe_role(
+                        payload.get("agent_type") or payload.get("role")
+                    ),
                     "model": self._safe_model(payload.get("model")),
-                    "reasoning_effort": "unknown",
+                    "reasoning_effort": self._safe_effort(
+                        payload.get("reasoning_effort") or payload.get("effort")
+                    ),
                 }
+            else:
+                transition = None
+            if transition:
+                raw_agent_identity = self._raw_agent_identity(payload)
+                if raw_agent_identity is not None:
+                    agent_hash = identity(f"agent:{raw_agent_identity}", self.root)
+                    transition["stage"] = self._associate_lifecycle_stage(
+                        task,
+                        transition,
+                        agent_hash,
+                        int(ledger["next_sequence"]),
+                    )
                 agg["transitions"].append(transition)
                 sanitized["transition"] = transition
             self._append(ledger, sanitized, dedupe)
@@ -2155,7 +2315,11 @@ class RouterEngine:
                 raise ValueError(f"stage is not part of task route plan: {stage}")
             stage_source = "caller_supplied" if stage is not None else "unknown"
             attributable = route_stages + ([existing_followup] if existing_followup else [])
-            if stage is None and len(attributable) == 1:
+            lifecycle_stage = self._recent_completed_lifecycle_stage(task)
+            if stage is None and lifecycle_stage in allowed_stages:
+                stage = lifecycle_stage
+                stage_source = "lifecycle_inferred"
+            elif stage is None and len(attributable) == 1:
                 stage = str(attributable[0]["stage"])
                 stage_source = "single_stage_inferred"
             audit_followup = None
@@ -2366,6 +2530,7 @@ def create_route_record(
                 "retry_count": 0,
                 "verification_kinds": [],
                 "transitions": [],
+                "lifecycle": {},
             },
         }
         ledger["tasks"][reference] = task_record

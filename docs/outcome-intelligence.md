@@ -10,7 +10,9 @@ The implementation follows the [official OpenAI Hooks documentation](https://lea
 
 `UserPromptSubmit` creates one task per user turn. Hook and MCP processes share the canonical `CODEX_HOME/codex-adaptive-router` root unless `CODEX_ADAPTIVE_ROUTER_DATA` explicitly overrides it. `PLUGIN_DATA` remains a read-only legacy source: an MCP-only `task_ref` can import its matching validated v2 task events from any exact `CODEX_HOME/plugins/data/codex-adaptive-router-*` root. Route IDs are preserved, event IDs and dedupe keys remain idempotent, and conflicting legacy route IDs fail closed.
 
-`route_plan(task_ref=...)` returns the existing route. Asynchronous events are deduplicated and correlated by turn; append-only route events rebuild a missing ledger after a partial write. `Stop` records provisional evidence until objective verification or explicit user correction supplies quality.
+`route_plan(task_ref=...)` returns the existing route. Asynchronous events are deduplicated and correlated by turn; append-only route events rebuild a missing ledger after a partial write. Agent/spawn and subagent-start hooks associate an HMAC agent identity only when role and any available model/effort select one unique unfinished required stage. Subagent stop completes that bounded lifecycle mapping for later outcome inference; ambiguous or unmatched agents remain unknown. Raw agent IDs are never persisted. `Stop` records provisional evidence until objective verification or explicit user correction supplies quality.
+
+Lifecycle completion is not quality evidence. `SubagentStop` never sets `objective_verification`; only an explicit outcome or existing privacy-bounded verification evidence can do so. Consequently, adjacent-stage handoff metrics require objective verification on both associated stage outcomes.
 
 ## Privacy and learning gates
 
@@ -20,7 +22,7 @@ Quality and risk gates precede resource minimization. The incumbent wins evidenc
 
 ## Capability-budget attribution
 
-New evidence uses event schema v3; existing v1/v2 evidence is read-only compatible and is never rewritten. Outcomes may identify a route stage and independently classify model fit, effort fit, context fit, tool-data fit, and a bounded result signal. A supplied stage must exist in the task's stored plan; a sole required stage is inferred, otherwise attribution stays unknown.
+New evidence uses event schema v3; existing v1/v2 evidence is read-only compatible and is never rewritten. Outcomes may identify a route stage and independently classify model fit, effort fit, context fit, tool-data fit, and a bounded result signal. A supplied stage must exist in the task's stored plan; otherwise the most recent uniquely completed lifecycle-associated stage is preferred, then a sole required stage is inferred. Ambiguity stays unknown.
 
 - A replacement that keeps role and model fixed and changes only effort may support `reasoning_budget` evidence.
 - A replacement that keeps role and effort fixed and changes only model may support `model_capability` evidence.

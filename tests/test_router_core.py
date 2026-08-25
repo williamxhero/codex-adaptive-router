@@ -537,6 +537,203 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(agg["tool_count"], 1)
             self.assertEqual(agg["transitions"][0]["model"], "gpt-5.6-luna")
 
+    def test_lifecycle_uniquely_associates_stage_without_raw_agent_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = router_core.RouterEngine(root)
+            task = engine.begin_task(
+                session_id="s",
+                turn_id="t",
+                prompt="Implement the frozen change",
+                decision_features={
+                    "cognitive_type": "implementation",
+                    "spec_state": "frozen",
+                },
+            )
+            agent_id = "raw-agent-identity-must-not-persist"
+            lifecycle = {
+                "session_id": "s",
+                "turn_id": "t",
+                "agent_id": agent_id,
+                "agent_type": "router_research_engineer",
+                "model": "gpt-5.6-terra",
+                "reasoning_effort": "high",
+            }
+            spawn = {
+                "session_id": "s",
+                "turn_id": "t",
+                "tool_use_id": "spawn-call",
+                "tool_name": "spawn_agent",
+                "tool_input": {
+                    "agent_type": "router_research_engineer",
+                    "model": "gpt-5.6-terra",
+                    "reasoning_effort": "high",
+                },
+                "tool_response": {"agent_id": agent_id},
+            }
+            engine.observe_event("PostToolUse", spawn)
+            engine.observe_event("PostToolUse", spawn)
+            for event in ("SubagentStart", "SubagentStart", "SubagentStop", "SubagentStop"):
+                engine.observe_event(event, lifecycle)
+
+            outcome = engine.finalize_task(
+                task["task_ref"],
+                status="completed",
+                quality_gate="passed",
+                objective_verification=False,
+            )
+            self.assertEqual(
+                (outcome.get("stage"), outcome["stage_source"]),
+                ("implement", "lifecycle_inferred"),
+            )
+            self.assertFalse(outcome["objective_verification"])
+
+            ledger_text = router_core.ledger_path(root).read_text(encoding="utf-8")
+            events_text = router_core.events_path(root).read_text(encoding="utf-8")
+            self.assertNotIn(agent_id, ledger_text)
+            self.assertNotIn(agent_id, events_text)
+            ledger = json.loads(ledger_text)
+            lifecycle_map = ledger["tasks"][task["task_ref"]]["aggregate"]["lifecycle"]
+            self.assertEqual(len(lifecycle_map), 1)
+            agent_hash, state = next(iter(lifecycle_map.items()))
+            self.assertEqual(len(agent_hash), 32)
+            self.assertEqual(
+                (state["stage"], state["status"]),
+                ("implement", "completed"),
+            )
+            execution_events = [
+                event
+                for event in router_core._all_events(root)
+                if event["type"] == "execution"
+            ]
+            self.assertEqual(len(execution_events), 3)
+
+    def test_lifecycle_ambiguous_or_unmatched_stage_stays_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = router_core.RouterEngine(root)
+            task = engine.begin_task(
+                session_id="s",
+                turn_id="t",
+                prompt="Research the conflicting evidence",
+                decision_features={
+                    "cognitive_type": "research",
+                    "evidence_state": "conflicting",
+                },
+            )
+            for agent_id, role, model, effort in (
+                ("ambiguous", "router_researcher", "gpt-5.6-sol", "high"),
+                ("unmatched", "worker", "gpt-5.6-terra", "medium"),
+            ):
+                payload = {
+                    "session_id": "s",
+                    "turn_id": "t",
+                    "agent_id": agent_id,
+                    "agent_type": role,
+                    "model": model,
+                    "reasoning_effort": effort,
+                }
+                engine.observe_event("SubagentStart", payload)
+                engine.observe_event("SubagentStop", payload)
+
+            outcome = engine.finalize_task(task["task_ref"])
+            self.assertNotIn("stage", outcome)
+            self.assertEqual(outcome["stage_source"], "unknown")
+            ledger = json.loads(router_core.ledger_path(root).read_text())
+            lifecycle = ledger["tasks"][task["task_ref"]]["aggregate"]["lifecycle"]
+            self.assertEqual(
+                {state["stage"] for state in lifecycle.values()},
+                {"unknown"},
+            )
+
+            later_unknown = engine.begin_task(
+                session_id="later-unknown",
+                turn_id="t",
+                prompt="Implement the frozen change",
+                decision_features={
+                    "cognitive_type": "implementation",
+                    "spec_state": "frozen",
+                },
+            )
+            for agent_id, role, model, effort in (
+                ("known-first", "router_research_engineer", "gpt-5.6-terra", "high"),
+                ("unknown-last", "worker", "gpt-5.6-terra", "medium"),
+            ):
+                payload = {
+                    "session_id": "later-unknown",
+                    "turn_id": "t",
+                    "agent_id": agent_id,
+                    "agent_type": role,
+                    "model": model,
+                    "reasoning_effort": effort,
+                }
+                engine.observe_event("SubagentStart", payload)
+                engine.observe_event("SubagentStop", payload)
+            later_outcome = engine.finalize_task(later_unknown["task_ref"])
+            self.assertNotIn("stage", later_outcome)
+            self.assertEqual(later_outcome["stage_source"], "unknown")
+
+    def test_lifecycle_handoff_requires_objective_verification_on_both_stages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def record_implementation_task(session_id, implement_verified):
+                engine = router_core.RouterEngine(root)
+                task = engine.begin_task(
+                    session_id=session_id,
+                    turn_id="t",
+                    prompt="Implement the frozen change",
+                    decision_features={
+                        "cognitive_type": "implementation",
+                        "spec_state": "frozen",
+                    },
+                )
+                for index, (role, model, effort, objective) in enumerate(
+                    (
+                        (
+                            "router_research_engineer",
+                            "gpt-5.6-terra",
+                            "high",
+                            implement_verified,
+                        ),
+                        (
+                            "router_experiment_runner",
+                            "gpt-5.6-luna",
+                            "medium",
+                            True,
+                        ),
+                    )
+                ):
+                    payload = {
+                        "session_id": session_id,
+                        "turn_id": "t",
+                        "agent_id": f"{session_id}-{index}",
+                        "agent_type": role,
+                        "model": model,
+                        "reasoning_effort": effort,
+                    }
+                    engine.observe_event("SubagentStart", payload)
+                    engine.observe_event("SubagentStop", payload)
+                    outcome = engine.finalize_task(
+                        task["task_ref"],
+                        quality_gate="passed",
+                        verified=objective,
+                        objective_verification=objective,
+                    )
+                    self.assertEqual(outcome["stage_source"], "lifecycle_inferred")
+
+            record_implementation_task("unverified", False)
+            self.assertEqual(
+                router_core.router_metrics(root)["stage_handoff_success"]["denominator"],
+                0,
+            )
+            record_implementation_task("verified", True)
+            handoff = router_core.router_metrics(root)["stage_handoff_success"]
+            self.assertEqual(
+                (handoff["numerator"], handoff["denominator"], handoff["rate"]),
+                (1, 1, 1.0),
+            )
+
     def test_late_async_event_stays_with_original_turn(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
