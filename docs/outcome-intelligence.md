@@ -20,7 +20,7 @@ Quality and risk gates precede resource minimization. The incumbent wins evidenc
 
 ## Capability-budget attribution
 
-New evidence uses event schema v3; existing v1/v2 evidence is read-only compatible and is never rewritten. Outcomes may identify a route stage and independently classify model fit, effort fit, context fit, and tool-data fit with bounded enums.
+New evidence uses event schema v3; existing v1/v2 evidence is read-only compatible and is never rewritten. Outcomes may identify a route stage and independently classify model fit, effort fit, context fit, tool-data fit, and a bounded result signal. A supplied stage must exist in the task's stored plan; a sole required stage is inferred, otherwise attribution stays unknown.
 
 - A replacement that keeps role and model fixed and changes only effort may support `reasoning_budget` evidence.
 - A replacement that keeps role and effort fixed and changes only model may support `model_capability` evidence.
@@ -28,6 +28,8 @@ New evidence uses event schema v3; existing v1/v2 evidence is read-only compatib
 - Deficient context or tool data takes precedence and cannot create model- or effort-axis evidence.
 - Model proposals hold role and effort fixed; effort proposals hold role and model fixed. Below-floor downgrades are invalid.
 
-Metrics normalize mixed v2/v3 history before aggregation. They include task-class/model/effort success, model and effort fit counts, floor violations, decision leakage, mechanical Sol share, stage handoff success, quality-adjusted resource bands, and model-effort comparable counts. All dimensions remain bounded classifications or counts; no raw task content is retained.
+An `exceptional_positive` result signal stores no metric or result text. If the immutable route lacks audit, the outcome includes an idempotent required auditor/Sol/XHigh follow-up stage. The original route remains unchanged.
+
+Metrics normalize mixed v2/v3 history before aggregation. They include task-class/model/effort success, model and effort fit counts plus under/over rates with per-axis known-fit denominators, floor violations, decision leakage, mechanical Sol share, objectively verified adjacent-stage handoff success, quality-adjusted resource bands, and model-effort comparable counts. All dimensions remain bounded classifications or counts; no raw task content is retained.
 
 Evolution sync emits new batches, manifests, metrics, policies, schemas, and `latest.json` with explicit LF bytes. Previously published CRLF immutable artifacts remain byte-for-byte untouched and continue to participate in their original hash chain.

@@ -130,7 +130,7 @@ TOOLS = [
     },
     {
         "name": "record_route_outcome",
-        "description": "Record privacy-bounded Outcome Intelligence v3 evidence with independent model, effort, context, and tool-data fit. Failure-axis attribution is checked against the replacement tuple.",
+        "description": "Record privacy-bounded Outcome Intelligence v3 evidence. A supplied stage must belong to the task plan; exceptional_positive may return a required Sol XHigh audit follow-up without rewriting the route. Failure-axis attribution is checked against the replacement tuple.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -161,6 +161,12 @@ TOOLS = [
                 "context_fit": {"type": "string", "enum": sorted(router_core.CONTEXT_TOOL_FITS)},
                 "tool_data_fit": {"type": "string", "enum": sorted(router_core.CONTEXT_TOOL_FITS)},
                 "failure_axis": {"type": "string", "enum": sorted(router_core.FAILURE_AXES)},
+                "result_signal": {
+                    "type": "string",
+                    "enum": sorted(router_core.RESULT_SIGNALS),
+                    "default": "unknown",
+                    "description": "Privacy-bounded outcome classification only; never send raw metrics or result text.",
+                },
             },
             "required": ["route_id", "status", "confidence"],
             "additionalProperties": False,
@@ -280,6 +286,7 @@ def _tool_call(name: str, a: dict[str, Any]) -> Any:
             context_fit=str(a.get("context_fit") or "unknown"),
             tool_data_fit=str(a.get("tool_data_fit") or "unknown"),
             failure_axis=a.get("failure_axis"),
+            result_signal=str(a.get("result_signal") or "unknown"),
         )
     if name == "router_policy_status":
         return router_core.policy_status()

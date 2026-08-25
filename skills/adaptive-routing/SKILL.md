@@ -11,12 +11,12 @@ Use this Skill whenever a request is non-trivial, spans multiple files or tools,
 
 1. If the user explicitly specifies a model, reasoning effort, agent, or asks for no delegation, honor that request unless a higher-priority safety rule prevents it.
 2. `UserPromptSubmit` creates the task and initial route. Call `adaptive_router.route_plan` with its `task_ref` to confirm it idempotently; include structured `decision_features` and user `constraints` when known. Pass `task_state: "frozen"` only after semantics are settled.
-3. The plan cannot hot-switch the active primary thread's model or effort. Keep the Root at Sol Medium; use the returned `stages` to decide which specialist work to delegate.
+3. The plan cannot hot-switch the active primary thread's model or effort. `role: direct` means the current Root and is always Sol Medium. Any stage requiring Sol High/XHigh uses a named Sol specialist instead.
 4. Execute required stages in order: `frame`, `collect`, `implement`, `verify`, `synthesize`, then `audit` when present. Reuse an existing specialist when its role still matches the next stage.
 5. Spawn at most one active specialist by default. Parallelize only genuinely independent evidence stages whose isolation materially improves the result.
 6. Treat `capability_floor` as a hard model boundary. Reasoning effort never compensates for a model below that floor.
 7. If `capability_exception` is present, the requested below-floor model is restricted to the indicated worker use. It never receives decision or audit authority, and the Sol Root still synthesizes the result.
-8. The primary thread owns final intent, cross-agent integration, and all important conclusions. Do not let a stage output silently replace that ownership.
+8. The Root owns final intent, cross-agent integration, acceptance, and the response to the user. A researcher or architect may return a delegated decision result and an auditor may return an audit result, but the Root must explicitly integrate and accept or reject it.
 
 ## Decision boundary
 
@@ -43,5 +43,7 @@ When the task concerns strategies, backtests, market regimes, factor exposures, 
 ## Outcome evidence
 
 After meaningful routed work, call `adaptive_router.record_route_outcome` only when there is real evidence: verification passed, user correction, material failure, escalation, or a deliberate model override. Do not manufacture outcomes.
+
+When known, pass the completed `stage` and `objective_verification`. The stage must belong to the stored route plan; a single required stage may be inferred, while ambiguous multi-stage outcomes remain unattributed. For an unusually strong result, pass `result_signal: exceptional_positive` without raw metrics or result text. If the stored route has no audit, the Router returns a required `router_adversarial_auditor` / Sol XHigh follow-up; execute and record that audit before accepting the result.
 
 For an escalation or override, provide the replacement role/model/effort. Proposal evidence also requires objective verification and explicit user confirmation. Role/model/effort proposals are independent axes; policy never changes automatically.

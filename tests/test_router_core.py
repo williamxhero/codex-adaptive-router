@@ -16,6 +16,59 @@ import router_core
 
 
 class RouterPlanTests(unittest.TestCase):
+    def test_direct_stages_are_root_sol_medium_and_high_decisions_use_specialists(self):
+        tiny = router_core.make_route_plan(
+            "Rename x",
+            decision_features={
+                "cognitive_type": "direct",
+                "scope": "tiny",
+                "verification_depth": "basic",
+            },
+        )
+        research = router_core.make_route_plan(
+            "Research conflicting evidence",
+            decision_features={
+                "cognitive_type": "research",
+                "evidence_state": "conflicting",
+            },
+        )
+        architecture = router_core.make_route_plan(
+            "Design an irreversible architecture",
+            decision_features={
+                "cognitive_type": "architecture",
+                "reversibility": "irreversible",
+            },
+        )
+        for plan in (tiny, research, architecture):
+            for stage in plan.stages:
+                if stage["role"] == "direct":
+                    self.assertEqual(
+                        (stage["model"], stage["reasoning_effort"]),
+                        ("gpt-5.6-sol", "medium"),
+                    )
+        self.assertEqual(
+            (tiny.route_mode, len(tiny.stages), tiny.stages[0]["role"]),
+            ("single", 1, "direct"),
+        )
+        self.assertTrue(
+            all(
+                stage["role"] == "router_researcher"
+                for stage in research.stages
+                if stage["stage"] in {"frame", "synthesize"}
+            )
+        )
+        self.assertTrue(
+            all(
+                stage["role"] == "router_architect"
+                for stage in architecture.stages
+                if stage["stage"] in {"frame", "synthesize"}
+            )
+        )
+        self.assertEqual(
+            (architecture.stages[-1]["stage"], architecture.stages[-1]["role"], architecture.stages[-1]["reasoning_effort"]),
+            ("audit", "router_adversarial_auditor", "xhigh"),
+        )
+
     def test_profile_v3_separates_authority_capability_and_effort(self):
         model_order = {
             "gpt-5.6-luna": 1,
@@ -68,13 +121,26 @@ class RouterPlanTests(unittest.TestCase):
             "xhigh",
         )
 
-    def test_constraints_win_and_max_is_not_automatic(self):
+    def test_constraints_respect_root_fixed_effort_and_max_is_not_automatic(self):
         plan = router_core.make_route_plan(
             "small answer",
             constraints={"model": "gpt-5.6-sol", "reasoning_effort": "max"},
         )
-        self.assertEqual(plan.reasoning_effort, "max")
-        self.assertEqual(plan.stages[0]["reasoning_effort"], "max")
+        self.assertEqual(plan.reasoning_effort, "medium")
+        self.assertEqual(plan.stages[0]["reasoning_effort"], "medium")
+        specialist = router_core.make_route_plan(
+            "Research the evidence",
+            decision_features={"cognitive_type": "research"},
+            constraints={"reasoning_effort": "max"},
+        )
+        self.assertEqual(specialist.reasoning_effort, "max")
+        self.assertTrue(
+            all(
+                stage["reasoning_effort"] == "max"
+                for stage in specialist.stages
+                if stage["role"] == "router_researcher"
+            )
+        )
         automatic = router_core.make_route_plan(
             "small answer",
             decision_features={"cognitive_type": "direct", "confidence": 0.9},
@@ -476,6 +542,158 @@ class EngineTests(unittest.TestCase):
 
 
 class IntelligenceTests(unittest.TestCase):
+    def test_model_and_effort_fit_rates_use_axis_known_denominators(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = router_core.RouterEngine(root)
+            fits = [
+                ("under", "under"),
+                ("over", "adequate"),
+                ("unknown", "unknown"),
+            ]
+            for index, (model_fit, effort_fit) in enumerate(fits):
+                task = engine.begin_task(
+                    session_id=f"s{index}",
+                    turn_id="1",
+                    prompt="Search code",
+                )
+                engine.finalize_task(
+                    task["task_ref"],
+                    quality_gate="passed",
+                    verified=True,
+                    model_fit=model_fit,
+                    effort_fit=effort_fit,
+                )
+            metrics = router_core.router_metrics(root)
+            self.assertEqual(metrics["model_fit_counts"]["under"], 1)
+            self.assertEqual(metrics["model_fit_counts"]["over"], 1)
+            self.assertEqual(metrics["model_fit_denominator"], 2)
+            self.assertEqual(metrics["model_under_routing_rate"], 0.5)
+            self.assertEqual(metrics["model_over_routing_rate"], 0.5)
+            self.assertEqual(metrics["effort_fit_denominator"], 2)
+            self.assertEqual(metrics["effort_under_routing_rate"], 0.5)
+            self.assertEqual(metrics["effort_over_routing_rate"], 0.0)
+
+    def test_exceptional_positive_outcome_creates_idempotent_audit_followup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = router_core.RouterEngine(root)
+            task = engine.begin_task(
+                session_id="s",
+                turn_id="t",
+                prompt="Run the defined backtest",
+                decision_features={"cognitive_type": "execution"},
+            )
+            original_stages = json.loads(json.dumps(task["route"]["stages"]))
+            self.assertNotIn("audit", [stage["stage"] for stage in original_stages])
+            first = engine.finalize_task(
+                task["task_ref"],
+                status="verified",
+                quality_gate="passed",
+                verified=True,
+                objective_verification=True,
+                confidence=0.95,
+                result_signal="exceptional_positive",
+            )
+            second = engine.finalize_task(
+                task["task_ref"],
+                status="verified",
+                quality_gate="passed",
+                verified=True,
+                objective_verification=True,
+                confidence=0.95,
+                result_signal="exceptional_positive",
+            )
+            followup = first["audit_followup"]
+            self.assertEqual(first["event_id"], second["event_id"])
+            self.assertEqual(
+                (followup["stage"], followup["role"], followup["model"], followup["reasoning_effort"], followup["required"]),
+                ("audit", "router_adversarial_auditor", "gpt-5.6-sol", "xhigh", True),
+            )
+            self.assertEqual(task["route"]["stages"], original_stages)
+            outcomes = [
+                event
+                for event in router_core._all_events(root)
+                if event["type"] == "outcome"
+            ]
+            self.assertEqual(len(outcomes), 1)
+            self.assertNotIn("metric", json.dumps(first).casefold())
+
+            audit_outcome = engine.finalize_task(
+                task["task_ref"],
+                stage="audit",
+                status="verified",
+                quality_gate="passed",
+                verified=True,
+                objective_verification=True,
+                confidence=0.95,
+            )
+            self.assertEqual(audit_outcome["stage"], "audit")
+            self.assertEqual(audit_outcome["stage_source"], "caller_supplied")
+            self.assertNotIn("audit_followup", audit_outcome)
+
+    def test_stage_validation_inference_and_verified_adjacent_handoffs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = router_core.RouterEngine(root)
+            tiny = engine.begin_task(
+                session_id="tiny",
+                turn_id="1",
+                prompt="Rename x",
+                decision_features={
+                    "cognitive_type": "direct",
+                    "scope": "tiny",
+                    "verification_depth": "basic",
+                },
+            )
+            inferred = engine.finalize_task(
+                tiny["task_ref"],
+                verified=True,
+                quality_gate="passed",
+                objective_verification=True,
+            )
+            self.assertEqual(
+                (inferred["stage"], inferred["stage_source"]),
+                ("synthesize", "single_stage_inferred"),
+            )
+
+            staged = engine.begin_task(
+                session_id="staged",
+                turn_id="1",
+                prompt="Implement the frozen change",
+                decision_features={
+                    "cognitive_type": "implementation",
+                    "spec_state": "frozen",
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "stage is not part"):
+                engine.finalize_task(staged["task_ref"], stage="audit")
+            for stage, quality in (
+                ("frame", "passed"),
+                ("implement", "passed"),
+                ("verify", "failed"),
+            ):
+                outcome = engine.finalize_task(
+                    staged["task_ref"],
+                    stage=stage,
+                    status="verified" if quality == "passed" else "failed",
+                    quality_gate=quality,
+                    objective_verification=True,
+                    verified=quality == "passed",
+                )
+                self.assertEqual(outcome["stage_source"], "caller_supplied")
+            handoff = router_core.router_metrics(root)["stage_handoff_success"]
+            self.assertEqual(
+                handoff,
+                {
+                    "numerator": 1,
+                    "denominator": 2,
+                    "rate": 0.5,
+                    "passed": 1,
+                    "total": 2,
+                },
+            )
+
     def test_model_proposals_hold_role_and_effort_fixed_and_confounded_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as model_dir, tempfile.TemporaryDirectory() as mixed_dir:
             model_root = Path(model_dir)
@@ -603,7 +821,8 @@ class IntelligenceTests(unittest.TestCase):
             legacy = json.loads(json.dumps(outcome))
             legacy["schema_version"] = 2
             for field in (
-                "stage", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis"
+                "stage", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis",
+                "result_signal", "stage_source", "audit_followup",
             ):
                 legacy.pop(field, None)
             router_core.validate_evidence_event(legacy)
@@ -794,10 +1013,12 @@ class IntelligenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             for i in range(5):
-                plan = router_core.make_route_plan("small direct answer", root=root)
+                plan = router_core.make_route_plan(
+                    "Implement from frozen spec", task_state="frozen", root=root
+                )
                 router_core.create_route_record(
                     plan,
-                    "small direct answer",
+                    "Implement from frozen spec",
                     session_id=f"s{i%3}",
                     project_fingerprint=f"p{i%2}",
                     root=root,
@@ -811,9 +1032,9 @@ class IntelligenceTests(unittest.TestCase):
                     route_fit="over_routed",
                     objective_verification=True,
                     user_confirmed=True,
-                    replacement_role="direct",
-                    replacement_model="gpt-5.6-sol",
-                    replacement_effort="low",
+                    replacement_role=plan.role,
+                    replacement_model=plan.model,
+                    replacement_effort="medium",
                     root=root,
                 )
             proposal = next(
@@ -826,8 +1047,12 @@ class IntelligenceTests(unittest.TestCase):
             task = engine.begin_task(
                 session_id="new",
                 turn_id="new",
-                prompt="small direct answer",
+                prompt="Implement from frozen spec",
                 project="p3",
+                decision_features={
+                    "cognitive_type": "implementation",
+                    "spec_state": "frozen",
+                },
             )
             engine.finalize_task(
                 task["task_ref"],

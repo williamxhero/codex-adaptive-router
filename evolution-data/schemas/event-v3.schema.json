@@ -56,12 +56,15 @@
     "effort_fit": {"enum": ["under", "adequate", "over", "unknown"]},
     "context_fit": {"enum": ["adequate", "deficient", "unknown"]},
     "tool_data_fit": {"enum": ["adequate", "deficient", "unknown"]},
-    "failure_axis": {"enum": ["model_capability", "reasoning_budget", "context", "tool_data", "execution", "none", "confounded"]}
+    "failure_axis": {"enum": ["model_capability", "reasoning_budget", "context", "tool_data", "execution", "none", "confounded"]},
+    "result_signal": {"enum": ["normal", "exceptional_positive", "exceptional_negative", "unknown"]},
+    "stage_source": {"enum": ["caller_supplied", "single_stage_inferred", "unknown"]},
+    "audit_followup": {"type": "object", "required": ["stage", "authority", "role", "capability_floor", "model", "reasoning_effort", "required"], "properties": {"stage": {"const": "audit"}, "authority": {"const": "audit"}, "role": {"const": "router_adversarial_auditor"}, "capability_floor": {"const": "gpt-5.6-sol"}, "model": {"const": "gpt-5.6-sol"}, "reasoning_effort": {"const": "xhigh"}, "required": {"const": true}}, "additionalProperties": false}
   },
   "allOf": [
     {"if": {"properties": {"type": {"const": "route"}}}, "then": {"required": ["task_fingerprint", "profile", "task_class", "role", "model", "reasoning_effort", "confidence", "decision_features", "constraints", "policy_revision", "shadow", "session", "project", "plan_version", "capability_floor", "effort_basis", "route_mode", "stages", "capability_exception"]}},
     {"if": {"properties": {"type": {"const": "execution"}}}, "then": {"required": ["event"]}},
-    {"if": {"properties": {"type": {"const": "outcome"}}}, "then": {"required": ["status", "quality_gate", "route_fit", "verification_kinds", "confidence", "evidence_source", "objective_verification", "user_confirmed", "replacement", "high_risk_regression", "retry_band", "rework_band", "tool_band", "duration_band", "token_band", "cost_band", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis"]}}
+    {"if": {"properties": {"type": {"const": "outcome"}}}, "then": {"required": ["status", "quality_gate", "route_fit", "verification_kinds", "confidence", "evidence_source", "objective_verification", "user_confirmed", "replacement", "high_risk_regression", "retry_band", "rework_band", "tool_band", "duration_band", "token_band", "cost_band", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis", "result_signal", "stage_source"]}}
   ],
   "additionalProperties": false
 }

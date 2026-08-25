@@ -21,7 +21,7 @@ Luna and Terra generate bounded evidence or implementation. They never own unres
 
 Reasoning effort never compensates for a model below its floor. Evidence requires at least Luna, implementation requires at least Terra, and decision or audit authority requires Sol. Max and Ultra are never automatic; they require an explicit user constraint or a human-confirmed policy override.
 
-Route Plan v2 uses deterministic templates: tiny direct work stays Root Sol Medium; discovery collects with Luna then synthesizes with Sol; implementation frames with Sol, implements with Terra, verifies with Luna, and synthesizes with Sol; research frames and synthesizes with Sol around bounded collection and optional frozen implementation. High-impact or exceptional results append a Sol XHigh audit.
+Route Plan v2 uses deterministic templates: tiny direct work stays Root Sol Medium; discovery collects with Luna then returns to the Root; implementation uses Root Sol Medium for intent/integration around Terra implementation and Luna verification; research and architecture delegate High-budget decision stages to named Sol specialists. `direct` always means the current Root at Sol Medium. High-impact plans use an auditor specialist, and an `exceptional_positive` outcome adds an idempotent required Sol XHigh audit follow-up when the immutable original plan lacked one.
 
 ## Important capability boundary
 
@@ -69,7 +69,7 @@ Hooks and the MCP server now write to one canonical runtime root: `CODEX_ADAPTIV
 
 ### v1.2.0 Capability–Budget Separation
 
-Profiles use schema v3 with explicit authority, capability floor, legal models, independent effort bands, and Sol escalation conditions. Decision Features v2 accepts any documented subset and deterministically fills the remainder. Outcome Intelligence v3 separates model, effort, context, tool-data, and execution failure axes; multi-axis replacements are confounded rather than misattributed.
+Profiles use schema v3 with explicit authority, capability floor, legal models, independent effort bands, and Sol escalation conditions. Decision Features v2 accepts any documented subset and deterministically fills the remainder. Outcome Intelligence v3 separates model, effort, context, tool-data, and execution failure axes; multi-axis replacements are confounded rather than misattributed. Stage completion is validated against the stored plan, adjacent objectively verified stages drive handoff metrics, and model/effort under/over rates use independent known-fit denominators.
 
 See [Capability–Budget ADR](docs/adr/0001-capability-budget-separation.md) and [Outcome Intelligence](docs/outcome-intelligence.md).
 

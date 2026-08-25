@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,8 @@ FAILURE_AXES = {
     "model_capability", "reasoning_budget", "context", "tool_data",
     "execution", "none", "confounded",
 }
+RESULT_SIGNALS = {"normal", "exceptional_positive", "exceptional_negative", "unknown"}
+STAGE_SOURCES = {"caller_supplied", "single_stage_inferred", "unknown"}
 BANDS = {"unknown", "low", "medium", "high", "very_high"}
 FEATURE_VALUES = {
     "operation_mode": {
@@ -233,6 +236,11 @@ def _validate_stage(value: Any) -> None:
         raise ValueError("route stage classification is invalid")
     if stage["role"] not in VALID_ROLES or stage["model"] not in VALID_MODELS:
         raise ValueError("route stage tuple is invalid")
+    if stage["role"] == "direct" and (
+        stage["model"] != "gpt-5.6-sol"
+        or stage["reasoning_effort"] != "medium"
+    ):
+        raise ValueError("direct stage must be the Root at Sol Medium")
     expected_floor = AUTHORITY_FLOORS[stage["authority"]]
     if stage["capability_floor"] != expected_floor or MODEL_ORDER[stage["model"]] < MODEL_ORDER[expected_floor]:
         raise ValueError("route stage violates capability floor")
@@ -273,7 +281,8 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         "confidence", "evidence_source", "objective_verification", "user_confirmed", "replacement",
         "high_risk_regression", "retry_band", "rework_band", "tool_band", "duration_band",
         "token_band", "cost_band", "stage", "model_fit", "effort_fit",
-        "context_fit", "tool_data_fit", "failure_axis",
+        "context_fit", "tool_data_fit", "failure_axis", "result_signal",
+        "stage_source", "audit_followup",
     }
     if not isinstance(value, dict) or value.get("type") not in {"route", "execution", "outcome"}:
         raise ValueError("evidence event type is invalid")
@@ -284,12 +293,13 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
     }
     schema_version = value.get("schema_version")
     legacy_outcome = outcome - {
-        "stage", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis"
+        "stage", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis",
+        "result_signal", "stage_source", "audit_followup",
     }
     payload_required = {
         "route": route if schema_version == 3 else legacy_route,
         "execution": {"task_ref", "route_id", "event"},
-        "outcome": outcome - {"stage"} if schema_version == 3 else legacy_outcome,
+        "outcome": outcome - {"stage", "audit_followup"} if schema_version == 3 else legacy_outcome,
     }[event_type]
     required = common - {"dedupe_key"} | payload_required
     event = _strict_object(value, allowed, required, f"{event_type} event")
@@ -376,6 +386,20 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
                 raise ValueError("outcome context/tool-data fit is invalid")
             if event["failure_axis"] not in FAILURE_AXES:
                 raise ValueError("outcome failure_axis is invalid")
+            if event["result_signal"] not in RESULT_SIGNALS:
+                raise ValueError("outcome result_signal is invalid")
+            if event["stage_source"] not in STAGE_SOURCES:
+                raise ValueError("outcome stage_source is invalid")
+            if event["stage_source"] != "unknown" and "stage" not in event:
+                raise ValueError("outcome stage_source requires a stage")
+            if "audit_followup" in event:
+                _validate_stage(event["audit_followup"])
+                if (
+                    event["result_signal"] != "exceptional_positive"
+                    or event["audit_followup"]["stage"] != "audit"
+                    or event["audit_followup"]["authority"] != "audit"
+                ):
+                    raise ValueError("outcome audit_followup is invalid")
     return event
 
 
@@ -1050,10 +1074,6 @@ class RoutePlan:
     shadow_recommendation: dict[str, Any] | None = None
 
 
-def _capability_rank(model: str, effort: str) -> tuple[int, int]:
-    return (MODEL_ORDER.get(model, 0), EFFORT_ORDER.get(effort, 0))
-
-
 def _active_overrides(
     policy: dict[str, Any], profile: str, task_class: str
 ) -> dict[str, str]:
@@ -1226,15 +1246,21 @@ def _route_stages(
             _stage(loaded, "synthesize", "decision", "direct", "medium"),
         ]
     elif task_class in {"research", "diagnosis", "architecture", "exploration", "audit"}:
+        decision_role = {
+            "architecture": "router_architect",
+            "exploration": "router_strategy_scout",
+        }.get(task_class, "router_researcher")
         stages = [
-            _stage(loaded, "frame", "decision", "direct", effort),
+            _stage(loaded, "frame", "decision", decision_role, effort),
             _stage(loaded, "collect", "evidence", "router_code_mapper", "medium"),
         ]
         if needs_implementation:
             stages.append(
                 _stage(loaded, "implement", "implementation", "router_research_engineer", "high")
             )
-        stages.append(_stage(loaded, "synthesize", "decision", "direct", effort))
+        stages.append(
+            _stage(loaded, "synthesize", "decision", decision_role, effort)
+        )
     else:
         stages = [_stage(loaded, "synthesize", "decision", "direct", "medium")]
     if add_audit and stages[-1]["stage"] != "audit":
@@ -1360,7 +1386,7 @@ def make_route_plan(
         confidence=round(float(features["confidence"]), 2),
         reasons=["structured decision features", f"cognitive_type={features['cognitive_type']}"],
         escalation_triggers=escalation,
-        output_contract="Return bounded stage evidence; the Sol primary thread owns final intent, integration, and conclusions.",
+        output_contract="Return the bounded stage result; named Sol specialists may supply delegated decisions or audits, while the Root stays Sol Medium and owns intent, integration, acceptance, and the user-facing conclusion.",
         decision_features=features,
         constraints=constraints,
         plan_version=2,
@@ -1606,6 +1632,8 @@ class RouterEngine:
                 "context_fit": "unknown",
                 "tool_data_fit": "unknown",
                 "failure_axis": "execution",
+                "result_signal": "unknown",
+                "stage_source": "unknown",
             },
             f"followup:{previous['task_ref']}:{label}",
         )
@@ -1985,18 +2013,9 @@ class RouterEngine:
     @staticmethod
     def _axis_cost(axis: str, value: Any) -> int:
         if axis == "model":
-            return {"gpt-5.6-luna": 1, "gpt-5.6-terra": 2, "gpt-5.6-sol": 3}.get(
-                str(value), 0
-            )
+            return MODEL_ORDER.get(str(value), 0)
         if axis == "reasoning_effort":
-            return {
-                "low": 1,
-                "medium": 2,
-                "high": 3,
-                "xhigh": 4,
-                "max": 5,
-                "ultra": 6,
-            }.get(str(value), 0)
+            return EFFORT_ORDER.get(str(value), 0)
         return 1
 
     @staticmethod
@@ -2038,6 +2057,14 @@ class RouterEngine:
                 return "execution"
         return "execution" if status in {"failed", "corrected"} else "none"
 
+    def _audit_followup_for_task(self, task_ref: str) -> dict[str, Any] | None:
+        for event in reversed(_read_jsonl(events_path(self.root))):
+            if event.get("task_ref") == task_ref and isinstance(
+                event.get("audit_followup"), dict
+            ):
+                return dict(event["audit_followup"])
+        return None
+
     def finalize_task(
         self,
         task_ref: str,
@@ -2062,6 +2089,7 @@ class RouterEngine:
         context_fit: str = "unknown",
         tool_data_fit: str = "unknown",
         failure_axis: str | None = None,
+        result_signal: str = "unknown",
     ) -> dict[str, Any]:
         if (
             status not in OUTCOME_STATUSES
@@ -2081,6 +2109,8 @@ class RouterEngine:
             raise ValueError("invalid context/tool-data fit")
         if failure_axis is not None and failure_axis not in FAILURE_AXES:
             raise ValueError("invalid failure axis")
+        if result_signal not in RESULT_SIGNALS:
+            raise ValueError("invalid result signal")
         values = (replacement_role, replacement_model, replacement_effort)
         if any(x is not None for x in values) and not all(
             x is not None for x in values
@@ -2093,6 +2123,34 @@ class RouterEngine:
             task = ledger["tasks"].get(task_ref)
             if not task:
                 raise ValueError("unknown task_ref")
+            route_stages = [
+                dict(item)
+                for item in task["route"].get("stages", [])
+                if isinstance(item, dict) and item.get("required") is True
+            ]
+            existing_followup = self._audit_followup_for_task(task_ref)
+            allowed_stages = {str(item.get("stage")) for item in route_stages}
+            if existing_followup:
+                allowed_stages.add(str(existing_followup.get("stage")))
+            if stage is not None and stage not in allowed_stages:
+                raise ValueError(f"stage is not part of task route plan: {stage}")
+            stage_source = "caller_supplied" if stage is not None else "unknown"
+            attributable = route_stages + ([existing_followup] if existing_followup else [])
+            if stage is None and len(attributable) == 1:
+                stage = str(attributable[0]["stage"])
+                stage_source = "single_stage_inferred"
+            audit_followup = None
+            if (
+                result_signal == "exceptional_positive"
+                and "audit" not in allowed_stages
+            ):
+                audit_followup = _stage(
+                    load_profile(str(task["route"]["profile"])),
+                    "audit",
+                    "audit",
+                    "router_adversarial_auditor",
+                    "xhigh",
+                )
             agg = task["aggregate"]
             kinds = sorted(
                 set((verification_kinds or []) + list(agg["verification_kinds"]))
@@ -2153,13 +2211,19 @@ class RouterEngine:
                 "context_fit": context_fit,
                 "tool_data_fit": tool_data_fit,
                 "failure_axis": failure_axis,
+                "result_signal": result_signal,
+                "stage_source": stage_source,
             }
             if stage is not None:
                 outcome["stage"] = stage
+            if audit_followup is not None and "audit" not in {
+                str(item.get("stage")) for item in route_stages
+            }:
+                outcome["audit_followup"] = audit_followup
             record = self._append(
                 ledger,
                 outcome,
-                f"outcome:{task_ref}:{status}:{quality_gate}:{route_fit}:{stage or 'all'}:{failure_axis}",
+                f"outcome:{task_ref}:{status}:{quality_gate}:{route_fit}:{stage or 'all'}:{failure_axis}:{result_signal}",
             )
             task["status"] = "provisional" if quality_gate == "provisional" else status
             task["finalized_at"] = utc_now()
@@ -2325,6 +2389,7 @@ def record_outcome(
     context_fit: str = "unknown",
     tool_data_fit: str = "unknown",
     failure_axis: str | None = None,
+    result_signal: str = "unknown",
     root: Path | None = None,
 ) -> dict[str, Any]:
     routes, _ = _events_by_type(root)
@@ -2353,6 +2418,7 @@ def record_outcome(
         context_fit=context_fit,
         tool_data_fit=tool_data_fit,
         failure_axis=failure_axis,
+        result_signal=result_signal,
     )
 
 
@@ -2514,6 +2580,11 @@ def start_shadow(proposal_id: str, root: Path | None = None) -> dict[str, Any]:
 def record_shadow_observation(
     proposal_id: str, success: bool, root: Path | None = None
 ) -> dict[str, Any]:
+    """Keep the legacy boolean wire shape without treating it as policy evidence.
+
+    A manual success bit has no executed candidate, objective verification, or
+    loss context, so it must remain inconclusive and cannot advance readiness.
+    """
     if type(success) is not bool:
         raise ValueError("success must be boolean")
     with _file_lock(state_lock_path(root)):
@@ -2663,10 +2734,25 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
         fit: sum(outcome.get("effort_fit") == fit for outcome in latest.values())
         for fit in MODEL_EFFORT_FITS
     }
+    model_fit_denominator = sum(
+        model_fit_counts[fit] for fit in MODEL_EFFORT_FITS if fit != "unknown"
+    )
+    effort_fit_denominator = sum(
+        effort_fit_counts[fit] for fit in MODEL_EFFORT_FITS if fit != "unknown"
+    )
     floor_violations = 0
     decision_leakage = 0
     mechanical = []
-    staged_known = []
+    stage_outcomes: dict[tuple[str, str], dict[str, Any]] = {}
+    audit_followups: dict[str, dict[str, Any]] = {}
+    for outcome in outcomes:
+        route_id = str(outcome.get("route_id"))
+        if isinstance(outcome.get("stage"), str):
+            stage_outcomes[(route_id, str(outcome["stage"]))] = outcome
+        if isinstance(outcome.get("audit_followup"), dict):
+            audit_followups[route_id] = outcome["audit_followup"]
+    handoff_numerator = 0
+    handoff_denominator = 0
     for route_id, route in routes.items():
         floor = route.get("capability_floor")
         if floor in MODEL_ORDER and MODEL_ORDER.get(str(route.get("model")), 0) < MODEL_ORDER[floor]:
@@ -2681,9 +2767,28 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
         features = route.get("decision_features") or {}
         if features.get("cognitive_type") == "direct" and features.get("scope") == "tiny":
             mechanical.append(route)
-        if route.get("route_mode") == "staged" and route_id in latest and latest[route_id].get("quality_gate") in {"passed", "failed"}:
-            staged_known.append(latest[route_id])
-    handoff_passed = sum(item.get("quality_gate") == "passed" for item in staged_known)
+        required_stages = [
+            str(stage.get("stage"))
+            for stage in route.get("stages") or []
+            if stage.get("required") is True
+        ]
+        followup = audit_followups.get(route_id)
+        if followup and followup.get("required") is True and "audit" not in required_stages:
+            required_stages.append("audit")
+        for left_name, right_name in pairwise(required_stages):
+            left = stage_outcomes.get((route_id, left_name))
+            right = stage_outcomes.get((route_id, right_name))
+            if not left or not right:
+                continue
+            if not left.get("objective_verification") or not right.get("objective_verification"):
+                continue
+            if left.get("quality_gate") not in {"passed", "failed"} or right.get("quality_gate") not in {"passed", "failed"}:
+                continue
+            handoff_denominator += 1
+            handoff_numerator += int(
+                left.get("quality_gate") == "passed"
+                and right.get("quality_gate") == "passed"
+            )
     return {
         "schema_version": 3,
         "capture_coverage": round(len(latest) / len(routes), 4) if routes else 0.0,
@@ -2701,6 +2806,28 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
         "task_class_model_effort_success": success_by_tuple,
         "model_fit_counts": model_fit_counts,
         "effort_fit_counts": effort_fit_counts,
+        "model_fit_denominator": model_fit_denominator,
+        "model_under_routing_rate": (
+            round(model_fit_counts["under"] / model_fit_denominator, 4)
+            if model_fit_denominator
+            else None
+        ),
+        "model_over_routing_rate": (
+            round(model_fit_counts["over"] / model_fit_denominator, 4)
+            if model_fit_denominator
+            else None
+        ),
+        "effort_fit_denominator": effort_fit_denominator,
+        "effort_under_routing_rate": (
+            round(effort_fit_counts["under"] / effort_fit_denominator, 4)
+            if effort_fit_denominator
+            else None
+        ),
+        "effort_over_routing_rate": (
+            round(effort_fit_counts["over"] / effort_fit_denominator, 4)
+            if effort_fit_denominator
+            else None
+        ),
         "floor_violations": floor_violations,
         "decision_leakage": decision_leakage,
         "mechanical_sol_share": (
@@ -2709,9 +2836,15 @@ def router_metrics(root: Path | None = None) -> dict[str, Any]:
             else None
         ),
         "stage_handoff_success": {
-            "passed": handoff_passed,
-            "total": len(staged_known),
-            "rate": round(handoff_passed / len(staged_known), 4) if staged_known else None,
+            "numerator": handoff_numerator,
+            "denominator": handoff_denominator,
+            "rate": (
+                round(handoff_numerator / handoff_denominator, 4)
+                if handoff_denominator
+                else None
+            ),
+            "passed": handoff_numerator,
+            "total": handoff_denominator,
         },
         "quality_adjusted_resource_bands": resources,
         "model_effort_interaction_comparable": interaction,

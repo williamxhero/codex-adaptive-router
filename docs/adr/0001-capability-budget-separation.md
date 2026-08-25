@@ -12,7 +12,9 @@ Earlier profiles paired a role with a model and an effort default, which made it
 
 Use the capability lattice `Luna < Terra < Sol` independently from the effort lattice. Every role declares an authority and capability floor. Evidence has a Luna floor, frozen-spec implementation has a Terra floor, and decision or audit authority has a Sol floor. Route planning computes the capability floor before it computes and clamps deterministic effort.
 
-Route Plan v2 may stage work across bounded evidence and implementation roles, but the Sol primary thread retains final framing, integration, synthesis, and conclusions. Explicit below-floor model requests are represented as capability exceptions and may only be used at a legal lower-authority worker stage. Max and Ultra require an explicit constraint or a human-confirmed policy override.
+Route Plan v2 may stage work across bounded evidence and implementation roles. `direct` denotes the current Root and is fixed at Sol Medium; decision or audit work needing High/XHigh is delegated to a named Sol researcher, architect, scout, or auditor. The Root retains final intent, integration, acceptance, and the user-facing conclusion. Explicit below-floor model requests are represented as capability exceptions and may only be used at a legal lower-authority worker stage. Max and Ultra require an explicit constraint or a human-confirmed policy override.
+
+Outcome schema v3 may add a privacy-bounded exceptional-positive signal. When the immutable original route lacks audit, that outcome carries a required Sol XHigh auditor follow-up rather than rewriting the route. Stage outcomes are checked against the effective plan, and handoff metrics compare objectively verified adjacent required stages.
 
 ## Alternatives considered
 

@@ -36,6 +36,11 @@ def validate(root: Path, base_ref: str | None = None) -> None:
     )
     if schema_v3.get("properties", {}).get("schema_version", {}).get("const") != 3 or schema_v3.get("additionalProperties") is not False:
         fail("event v3 schema is invalid")
+    properties_v3 = schema_v3.get("properties", {})
+    if set(properties_v3.get("result_signal", {}).get("enum", [])) != router_core.RESULT_SIGNALS:
+        fail("event v3 result_signal schema is invalid")
+    if set(properties_v3.get("stage_source", {}).get("enum", [])) != router_core.STAGE_SOURCES:
+        fail("event v3 stage_source schema is invalid")
     ids = set()
     events = []
     manifest_paths = (

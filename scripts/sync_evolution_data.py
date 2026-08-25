@@ -282,6 +282,8 @@ def _normalise_metrics_event(record: dict[str, Any]) -> dict[str, Any]:
         value.setdefault("context_fit", "unknown")
         value.setdefault("tool_data_fit", "unknown")
         value.setdefault("failure_axis", "none")
+        value.setdefault("result_signal", "unknown")
+        value.setdefault("stage_source", "unknown")
     return value
 
 

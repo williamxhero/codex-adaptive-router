@@ -17,6 +17,46 @@ import router_mcp
 
 
 class RouterMcpTests(unittest.TestCase):
+    def test_outcome_schema_and_call_support_exceptional_audit_followup(self) -> None:
+        reply = router_mcp.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        )
+        tools = {tool["name"]: tool for tool in reply["result"]["tools"]}
+        signal = tools["record_route_outcome"]["inputSchema"]["properties"][
+            "result_signal"
+        ]
+        self.assertEqual(
+            set(signal["enum"]),
+            {"normal", "exceptional_positive", "exceptional_negative", "unknown"},
+        )
+        self.assertIn("raw metrics", signal["description"])
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            os.environ, {"CODEX_ADAPTIVE_ROUTER_DATA": directory}
+        ):
+            route = router_mcp._tool_call(
+                "route_plan",
+                {
+                    "task": "Run the defined backtest",
+                    "decision_features": {"cognitive_type": "execution"},
+                },
+            )
+            outcome = router_mcp._tool_call(
+                "record_route_outcome",
+                {
+                    "route_id": route["route_id"],
+                    "status": "verified",
+                    "confidence": 0.95,
+                    "verified": True,
+                    "quality_gate": "passed",
+                    "objective_verification": True,
+                    "result_signal": "exceptional_positive",
+                },
+            )
+            self.assertEqual(
+                outcome["audit_followup"]["role"],
+                "router_adversarial_auditor",
+            )
+
     def test_release_versions_are_consistent(self) -> None:
         manifest = json.loads(
             (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
