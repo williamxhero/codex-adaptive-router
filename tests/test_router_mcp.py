@@ -281,7 +281,7 @@ class RouterMcpTests(unittest.TestCase):
         self.assertEqual(
             replies[0]["result"]["serverInfo"]["name"], "codex-adaptive-router"
         )
-        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "1.1.1")
+        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "1.2.0")
         payload = replies[1]["result"]["structuredContent"]
         self.assertEqual(payload["role"], "router_code_mapper")
         self.assertEqual(payload["model"], "gpt-5.6-luna")
@@ -317,7 +317,7 @@ class RouterMcpTests(unittest.TestCase):
         )
         self.assertIn("router_metrics", tools)
 
-    def test_route_plan_schema_matches_decision_features_v1(self) -> None:
+    def test_route_plan_schema_matches_decision_features_v2(self) -> None:
         reply = router_mcp.handle(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
         )
@@ -336,9 +336,14 @@ class RouterMcpTests(unittest.TestCase):
             "user_constraints",
             "feature_source",
             "confidence",
+            "feature_version",
+            "verification_depth",
+            "evidence_state",
+            "decision_impact",
+            "novelty",
         }
         self.assertEqual(set(features["properties"]), expected_fields)
-        self.assertEqual(set(features["required"]), expected_fields)
+        self.assertNotIn("required", features)
         self.assertFalse(features["additionalProperties"])
         expected_enums = {
             "operation_mode": {
@@ -370,6 +375,10 @@ class RouterMcpTests(unittest.TestCase):
                 "caller_supplied",
                 "legacy_v1",
             },
+            "verification_depth": {"basic", "standard", "deep", "adversarial"},
+            "evidence_state": {"unknown", "consistent", "conflicting"},
+            "decision_impact": {"low", "medium", "high", "critical"},
+            "novelty": {"routine", "novel", "open_ended"},
         }
         for field, expected in expected_enums.items():
             self.assertEqual(set(features["properties"][field]["enum"]), expected)
@@ -394,6 +403,7 @@ class RouterMcpTests(unittest.TestCase):
             features["properties"]["confidence"],
             {"type": "number", "minimum": 0, "maximum": 1},
         )
+        self.assertEqual(features["properties"]["feature_version"], {"type": "integer", "const": 2})
         constraints = schema["properties"]["constraints"]
         self.assertEqual(
             set(constraints["properties"]),
@@ -403,7 +413,8 @@ class RouterMcpTests(unittest.TestCase):
         task_state = schema["properties"]["task_state"]
         self.assertEqual(task_state["enum"], ["unknown", "frozen"])
         self.assertIn("only", task_state["description"].casefold())
-        self.assertIn("Decision Features v1", route_plan["description"])
+        self.assertIn("Decision Features v2", route_plan["description"])
+        self.assertIn("capability floor", route_plan["description"].casefold())
 
     def test_route_plan_accepts_only_known_task_ref(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(

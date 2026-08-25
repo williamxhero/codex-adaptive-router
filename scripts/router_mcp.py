@@ -1,4 +1,4 @@
-"""Dependency-free stdio MCP surface for Router Engine v1.1.1."""
+"""Dependency-free stdio MCP surface for Router Engine v1.2.0."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ BANDS = ["unknown", "low", "medium", "high", "very_high"]
 TOOLS = [
     {
         "name": "route_plan",
-        "description": "Plan a new route or idempotently confirm an existing task_ref. Decision Features v1 accepts only the documented fields and enums; omit task when confirming a known task_ref.",
+        "description": "Return Route Plan v2 or idempotently confirm an existing task_ref. Decision Features v2 accepts any known subset, rejects unknown fields, and fills the rest heuristically. Capability floor is computed before independent effort; Sol retains final decision ownership.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -92,19 +92,24 @@ TOOLS = [
                             "minimum": 0,
                             "maximum": 1,
                         },
+                        "feature_version": {"type": "integer", "const": 2},
+                        "verification_depth": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["verification_depth"]),
+                        },
+                        "evidence_state": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["evidence_state"]),
+                        },
+                        "decision_impact": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["decision_impact"]),
+                        },
+                        "novelty": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["novelty"]),
+                        },
                     },
-                    "required": [
-                        "operation_mode",
-                        "scope",
-                        "spec_state",
-                        "reversibility",
-                        "cognitive_type",
-                        "risk_domains",
-                        "workload",
-                        "user_constraints",
-                        "feature_source",
-                        "confidence",
-                    ],
                     "additionalProperties": False,
                 },
                 "constraints": {
@@ -293,7 +298,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "codex-adaptive-router", "version": "1.1.1"},
+                "serverInfo": {"name": "codex-adaptive-router", "version": "1.2.0"},
             },
         }
     if method == "tools/list":
