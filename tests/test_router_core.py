@@ -16,6 +16,36 @@ import router_core
 
 
 class RouterPlanTests(unittest.TestCase):
+    def test_profile_v3_separates_authority_capability_and_effort(self):
+        model_order = {
+            "gpt-5.6-luna": 1,
+            "gpt-5.6-terra": 2,
+            "gpt-5.6-sol": 3,
+        }
+        authority_floor = {
+            "evidence": "gpt-5.6-luna",
+            "implementation": "gpt-5.6-terra",
+            "decision": "gpt-5.6-sol",
+            "audit": "gpt-5.6-sol",
+        }
+        for name in ("generic", "quant"):
+            profile = router_core.load_profile(name)
+            self.assertEqual(profile["schema_version"], 3)
+            for config in profile["roles"].values():
+                floor = config["capability_floor"]
+                self.assertEqual(floor, authority_floor[config["authority"]])
+                self.assertIn(config["default_model"], config["allowed_models"])
+                self.assertTrue(
+                    all(
+                        model_order[model] >= model_order[floor]
+                        for model in config["allowed_models"]
+                    )
+                )
+                self.assertEqual(
+                    set(config["effort"]), {"min", "default", "max"}
+                )
+                self.assertIn("sol_escalation_conditions", config)
+
     def test_structured_routes(self):
         self.assertEqual(
             router_core.make_route_plan("Search code for references").role,

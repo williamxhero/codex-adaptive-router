@@ -1,9 +1,15 @@
-{"schema_version":2,"name":"generic","description":"Cross-project structured-risk routing profile.","roles":{
-"direct":{"capabilities":["bounded direct work"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"low","default":"medium","max":"xhigh"},"sol_escalation_conditions":[]},
-"router_code_mapper":{"capabilities":["code search","call chains"],"allowed_models":["gpt-5.6-luna"],"default_model":"gpt-5.6-luna","effort":{"min":"low","default":"medium","max":"high"},"sol_escalation_conditions":["undefined semantics","research conclusion"]},
-"router_experiment_runner":{"capabilities":["tests","benchmarks","metrics"],"allowed_models":["gpt-5.6-luna"],"default_model":"gpt-5.6-luna","effort":{"min":"low","default":"medium","max":"high"},"sol_escalation_conditions":["conflicting evidence","research conclusion"]},
-"router_research_engineer":{"capabilities":["frozen-spec implementation"],"allowed_models":["gpt-5.6-terra"],"default_model":"gpt-5.6-terra","effort":{"min":"medium","default":"high","max":"xhigh"},"sol_escalation_conditions":["undefined semantics","irreversible architecture","research conclusion"]},
-"router_researcher":{"capabilities":["diagnosis","research"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"medium","default":"high","max":"xhigh"},"sol_escalation_conditions":[]},
-"router_architect":{"capabilities":["architecture","semantics"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"high","max":"xhigh"},"sol_escalation_conditions":[]},
-"router_adversarial_auditor":{"capabilities":["adversarial review"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"xhigh","max":"xhigh"},"sol_escalation_conditions":[]},
-"router_strategy_scout":{"capabilities":["novel exploration"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"xhigh","max":"xhigh"},"sol_escalation_conditions":[]}}}
+{
+  "schema_version": 3,
+  "name": "generic",
+  "description": "Cross-project capability-floor and independent reasoning-budget profile.",
+  "roles": {
+    "direct": {"authority":"decision","capability_floor":"gpt-5.6-sol","capabilities":["bounded direct work","final intent and integration"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"low","default":"medium","max":"ultra"},"sol_escalation_conditions":[]},
+    "router_code_mapper": {"authority":"evidence","capability_floor":"gpt-5.6-luna","capabilities":["code search","call chains"],"allowed_models":["gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol"],"default_model":"gpt-5.6-luna","effort":{"min":"low","default":"medium","max":"ultra"},"sol_escalation_conditions":["undefined semantics","research conclusion"]},
+    "router_experiment_runner": {"authority":"evidence","capability_floor":"gpt-5.6-luna","capabilities":["tests","benchmarks","metrics"],"allowed_models":["gpt-5.6-luna","gpt-5.6-terra","gpt-5.6-sol"],"default_model":"gpt-5.6-luna","effort":{"min":"low","default":"medium","max":"ultra"},"sol_escalation_conditions":["conflicting evidence","research conclusion","exceptional result"]},
+    "router_research_engineer": {"authority":"implementation","capability_floor":"gpt-5.6-terra","capabilities":["frozen-spec implementation"],"allowed_models":["gpt-5.6-terra","gpt-5.6-sol"],"default_model":"gpt-5.6-terra","effort":{"min":"medium","default":"high","max":"ultra"},"sol_escalation_conditions":["undefined semantics","irreversible architecture","research conclusion"]},
+    "router_researcher": {"authority":"decision","capability_floor":"gpt-5.6-sol","capabilities":["diagnosis","research"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"medium","default":"high","max":"ultra"},"sol_escalation_conditions":[]},
+    "router_architect": {"authority":"decision","capability_floor":"gpt-5.6-sol","capabilities":["architecture","semantics"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"high","max":"ultra"},"sol_escalation_conditions":[]},
+    "router_adversarial_auditor": {"authority":"audit","capability_floor":"gpt-5.6-sol","capabilities":["adversarial review"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"xhigh","max":"ultra"},"sol_escalation_conditions":[]},
+    "router_strategy_scout": {"authority":"decision","capability_floor":"gpt-5.6-sol","capabilities":["novel exploration"],"allowed_models":["gpt-5.6-sol"],"default_model":"gpt-5.6-sol","effort":{"min":"high","default":"xhigh","max":"ultra"},"sol_escalation_conditions":[]}
+  }
+}
