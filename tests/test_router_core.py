@@ -376,6 +376,99 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["sequence"], 1)
 
+    def test_task_correlation_waits_for_complete_identity_salt_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = router_core.RouterEngine(root)
+            salt = router_core.salt_path(root)
+            callers_ready = threading.Barrier(4)
+            writer_opened = threading.Event()
+            writer_closed = threading.Event()
+            competing_reader = threading.Event()
+            real_token_bytes = router_core.secrets.token_bytes
+            real_fdopen = router_core.os.fdopen
+            real_read_bytes = Path.read_bytes
+            token_call_count = 0
+            token_call_lock = threading.Lock()
+
+            def synchronized_token_bytes(size):
+                nonlocal token_call_count
+                with token_call_lock:
+                    token_call_count += 1
+                    should_wait = token_call_count <= callers_ready.parties
+                if should_wait:
+                    callers_ready.wait(timeout=2)
+                return real_token_bytes(size)
+
+            def observed_read_bytes(path):
+                if (
+                    path == salt
+                    and writer_opened.is_set()
+                    and not writer_closed.is_set()
+                ):
+                    competing_reader.set()
+                    return b""
+                return real_read_bytes(path)
+
+            class DelayedSaltWriter:
+                def __init__(self, handle):
+                    self.handle = handle
+
+                def __getattr__(self, name):
+                    return getattr(self.handle, name)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc_value, traceback):
+                    try:
+                        return self.handle.__exit__(exc_type, exc_value, traceback)
+                    finally:
+                        writer_closed.set()
+
+                def write(self, value):
+                    writer_opened.set()
+                    competing_reader.wait(timeout=1)
+                    return self.handle.write(value)
+
+            def delayed_fdopen(descriptor, *args, **kwargs):
+                return DelayedSaltWriter(real_fdopen(descriptor, *args, **kwargs))
+
+            results = []
+            errors = []
+
+            def begin_same_task():
+                try:
+                    results.append(
+                        engine.begin_task(
+                            session_id="s", turn_id="t", prompt="Search code"
+                        )
+                    )
+                except (OSError, RuntimeError, TimeoutError, ValueError) as error:
+                    errors.append(error)
+
+            with (
+                mock.patch.object(
+                    router_core.secrets,
+                    "token_bytes",
+                    side_effect=synchronized_token_bytes,
+                ),
+                mock.patch.object(router_core.os, "fdopen", side_effect=delayed_fdopen),
+                mock.patch.object(Path, "read_bytes", observed_read_bytes),
+            ):
+                threads = [
+                    threading.Thread(target=begin_same_task)
+                    for _ in range(4)
+                ]
+                [thread.start() for thread in threads]
+                [thread.join() for thread in threads]
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(results), 4)
+            self.assertEqual(len({result["task_ref"] for result in results}), 1)
+            self.assertEqual(len(router_core._all_events(root)), 1)
+            self.assertGreaterEqual(len(salt.read_bytes()), 32)
+
     def test_explicit_plan_confirms_hook_route_without_reroute(self):
         with tempfile.TemporaryDirectory() as d:
             engine = router_core.RouterEngine(Path(d))

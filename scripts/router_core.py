@@ -762,17 +762,36 @@ def _salt(root: Path | None = None) -> bytes:
             return raw
     except OSError:
         pass
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = secrets.token_bytes(32)
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(raw)
-    except FileExistsError:
+    candidate = secrets.token_bytes(32)
+    with _file_lock(path):
+        try:
+            raw = path.read_bytes()
+            if len(raw) >= 32:
+                return raw
+        except OSError:
+            pass
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(
+            f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        try:
+            fd = os.open(
+                str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+            )
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(candidate)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                temporary.unlink()
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)
         raw = path.read_bytes()
-    with contextlib.suppress(OSError):
-        os.chmod(path, 0o600)
-    return raw
+        if len(raw) < 32:
+            raise RuntimeError("router identity salt publication was incomplete")
+        return raw
 
 
 def identity(value: str, root: Path | None = None) -> str:
