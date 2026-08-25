@@ -1,0 +1,8 @@
+{
+  "batch": "batch-36a5e3eb2b81c762af531c4fd9f8dfb5708d9d216ec59f43334edd81f9f4e2b9.jsonl",
+  "count": 26,
+  "created_at": "2026-08-25T09:31:00Z",
+  "previous_manifest_sha256": "8acc449d7477983493953159b6b81548875f8690631903ef344f98c100679379",
+  "schema_version": 3,
+  "sha256": "36a5e3eb2b81c762af531c4fd9f8dfb5708d9d216ec59f43334edd81f9f4e2b9"
+}
