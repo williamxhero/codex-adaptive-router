@@ -1,37 +1,25 @@
-# Outcome Intelligence v1.2.0
+# Outcome Intelligence v1.3.0
 
 ## Engine seam
 
-`RouterEngine` exposes `begin_task`, `plan_route`, `observe_event`, `finalize_task`, `evaluate_policy`, and `status`. Task ledger, risk classifier, route selector, outcome intelligence, and evidence storage stay behind this seam.
+`RouterEngine` keeps planning, lifecycle observation, transactional stage leases, outcome finalization, policy evaluation, and status behind one deep seam. Route Plan v3 is immutable; dispatch attempts and actual observations evolve separately.
 
-## Lifecycle contract
+## Lifecycle and leases
 
-The implementation follows the [official OpenAI Hooks documentation](https://learn.chatgpt.com/docs/hooks): it consumes event JSON from stdin, keys turns by `turn_id`, correlates tools by `tool_use_id`, observes `Agent`/`spawn_agent` plus subagent lifecycle events, and treats `SessionEnd` as root-session-only cleanup. It never reads `transcript_path`; the official documentation identifies transcript format as unstable.
+Hooks and MCP use one canonical data root and retain the v1.1.1 task-ref/legacy-store behavior. Agent identities and repository scope are HMAC-bound. A delegated stage is claimed atomically, enforces depth two, one default active specialist, at most three plan-declared independent read-only siblings with distinct claim keys, and one active writer in the logical repository tree. A mismatched remainder freezes its lease and reroutes without modifying the original plan.
 
-`UserPromptSubmit` creates one task per user turn. Hook and MCP processes share the canonical `CODEX_HOME/codex-adaptive-router` root unless `CODEX_ADAPTIVE_ROUTER_DATA` explicitly overrides it. `PLUGIN_DATA` remains a read-only legacy source: an MCP-only `task_ref` can import its matching validated v2 task events from any exact `CODEX_HOME/plugins/data/codex-adaptive-router-*` root. Route IDs are preserved, event IDs and dedupe keys remain idempotent, and conflicting legacy route IDs fail closed.
+`SubagentStop` proves only lifecycle completion. It never proves objective verification, boundary compliance, scope compliance, a passed quality gate, or archive eligibility.
 
-`route_plan(task_ref=...)` returns the existing route. Asynchronous events are deduplicated and correlated by turn; append-only route events rebuild a missing ledger after a partial write. Agent/spawn and subagent-start hooks associate an HMAC agent identity only when role and any available model/effort select one unique unfinished required stage. Subagent stop completes that bounded lifecycle mapping for later outcome inference; ambiguous or unmatched agents remain unknown. Raw agent IDs are never persisted. `Stop` records provisional evidence until objective verification or explicit user correction supplies quality.
+## Local Evidence v4
 
-Lifecycle completion is not quality evidence. `SubagentStop` never sets `objective_verification`; only an explicit outcome or existing privacy-bounded verification evidence can do so. Consequently, adjacent-stage handoff metrics require objective verification on both associated stage outcomes.
+Local v4 outcomes record dispatch target, observed role/model/effort/target, plan match, boundary/scope/verification/archive state, delegation depth, and an HMAC lease reference. Exact input/output/total tokens are accepted only from stable Codex/provider usage or an exact caller report. Hook-only runs stay unknown rather than estimated-as-actual.
 
-## Privacy and learning gates
+## Public projection
 
-The salt is local-only and generated with restrictive permissions. Persisted evidence is limited to enums, bands, HMACs, IDs, timestamps, counts, and bounded route transitions.
+GitHub sync projects v4 before upload. It removes exact local tokens, token estimates, titles, objectives, prompts, paths, code, tool I/O, and transcripts. Public batches contain only token bands/aggregates, bounded enums, HMAC identities, UUID/sequence scaffolding, counts, and timestamps. Evidence v1-v3 and the existing hash chain remain byte-preserved and read-only.
 
-Quality and risk gates precede resource minimization. The incumbent wins evidence ties, and an unexecuted cheaper candidate remains inconclusive. Policy proposals are axis-specific and always require human confirmation.
+## Learning safeguards
 
-## Capability-budget attribution
+Learning uses observed execution, not the planned tuple, and only the route's unique primary stage is eligible. Model evidence holds role, effort, execution target, depth, stage, and task class fixed; effort evidence holds role, model, execution target, depth, stage, and task class fixed. Plan deviation, failed/unknown boundaries or verification, worker or lease failures, non-adequate context/tool data, and multi-axis changes cannot create a proposal or a comparable shadow result. Repeated objective evidence, non-enforcing shadow evaluation, and explicit human confirmation remain mandatory; policy never promotes itself.
 
-New evidence uses event schema v3; existing v1/v2 evidence is read-only compatible and is never rewritten. Outcomes may identify a route stage and independently classify model fit, effort fit, context fit, tool-data fit, and a bounded result signal. A supplied stage must exist in the task's stored plan; otherwise the most recent uniquely completed lifecycle-associated stage is preferred, then a sole required stage is inferred. Ambiguity stays unknown.
-
-- A replacement that keeps role and model fixed and changes only effort may support `reasoning_budget` evidence.
-- A replacement that keeps role and effort fixed and changes only model may support `model_capability` evidence.
-- Multiple changed axes are `confounded`.
-- Deficient context or tool data takes precedence and cannot create model- or effort-axis evidence.
-- Model proposals hold role and effort fixed; effort proposals hold role and model fixed. Below-floor downgrades are invalid.
-
-An `exceptional_positive` result signal stores no metric or result text. If the immutable route lacks audit, the outcome includes an idempotent required auditor/Sol/XHigh follow-up stage. The original route remains unchanged.
-
-Metrics normalize mixed v2/v3 history before aggregation. They include task-class/model/effort success, model and effort fit counts plus under/over rates with per-axis known-fit denominators, floor violations, decision leakage, mechanical Sol share, objectively verified adjacent-stage handoff success, quality-adjusted resource bands, and model-effort comparable counts. All dimensions remain bounded classifications or counts; no raw task content is retained.
-
-Evolution sync emits new batches, manifests, metrics, policies, schemas, and `latest.json` with explicit LF bytes. Previously published CRLF immutable artifacts remain byte-for-byte untouched and continue to participate in their original hash chain.
+An exceptional-positive result creates a claimable Sol XHigh audit lease without rewriting the original plan. Its outcome must bind the completed, fully gated observed lease before acceptance. A visible task is archive eligible only after successful terminal state and passed quality, boundary, scope, verification, and required audit gates.

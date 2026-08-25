@@ -1,4 +1,4 @@
-"""Fail-closed immutable GitHub evolution export for Adaptive Router v1.2."""
+"""Fail-closed immutable GitHub evolution export for Adaptive Router v1.3."""
 
 from __future__ import annotations
 
@@ -51,6 +51,10 @@ FORBIDDEN_KEYS = {
     "secrets",
     "api_key",
     "private_key",
+    "local_tokens",
+    "token_estimate",
+    "visible_task_title",
+    "objective",
 }
 PATH_PATTERN = re.compile(
     r"(?:[A-Za-z]:\\|/(?:Users|home|data|workspace|tmp)/)", re.IGNORECASE
@@ -99,11 +103,11 @@ def _legacy_route_tuple(record: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def migrate_event(record: dict[str, Any]) -> dict[str, Any]:
-    """Return strict v2/v3 upload evidence without mutating source history."""
-    if record.get("schema_version") in {2, 3}:
-        value = json.loads(json.dumps(record))
+    """Return strict v2/v3/v4 upload evidence without mutating source history."""
+    if record.get("schema_version") in {2, 3, 4}:
+        value = router_core.project_public_evidence_event(record)
         try:
-            router_core.validate_evidence_event(value)
+            router_core.validate_public_evidence_event(value)
         except ValueError as error:
             raise SyncError(f"invalid v{record.get('schema_version')} evidence: {error}") from error
         assert_safe(value)
@@ -220,7 +224,6 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
             raise SyncError(f"invalid event line {number}: {error}") from error
         if not isinstance(value, dict):
             raise SyncError(f"event line {number} is not an object")
-        assert_safe(value)
         result.append(value)
     return result
 
@@ -311,6 +314,12 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
             encoding="utf-8"
         ),
     )
+    _write_new(
+        target / "schemas" / "event-v4.schema.json",
+        (PLUGIN_ROOT / "evolution-data" / "schemas" / "event-v4.schema.json").read_text(
+            encoding="utf-8"
+        ),
+    )
     existing_ids = set()
     for batch in (
         (target / "batches").glob("*.jsonl") if (target / "batches").exists() else []
@@ -332,7 +341,7 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
         batch_path = target / "batches" / batch_name
         _write_new(batch_path, rendered_batch)
         manifest = {
-            "schema_version": 3,
+            "schema_version": 4,
             "batch": batch_name,
             "count": len(fresh),
             "sha256": sha256(batch_path),
@@ -393,7 +402,7 @@ def write_export(router_data_root: Path, hook_data_root: Path, repository: Path)
             target / "metrics" / f"revision-{metrics_revision}.json", rendered_metrics
         )
     latest_value = {
-        "schema_version": 3,
+        "schema_version": 4,
         "policy_revision": revision,
         "metrics_revision": metrics_revision,
         "manifest": manifest_name or read_json(latest, {}).get("manifest"),

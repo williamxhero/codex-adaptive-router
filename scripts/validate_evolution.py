@@ -11,6 +11,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import jsonschema
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import router_core
@@ -49,6 +51,20 @@ def validate(root: Path, base_ref: str | None = None) -> None:
     )
     if transition_stages != router_core.STAGE_NAMES | {"unknown"}:
         fail("event v3 lifecycle transition stage schema is invalid")
+    schema_v4 = json.loads(
+        (target / "schemas" / "event-v4.schema.json").read_text(encoding="utf-8")
+    )
+    properties_v4 = schema_v4.get("properties", {})
+    if properties_v4.get("schema_version", {}).get("const") != 4 or schema_v4.get("additionalProperties") is not False:
+        fail("event v4 schema is invalid")
+    if set(properties_v4.get("plan_match", {}).get("enum", [])) != router_core.PLAN_MATCHES:
+        fail("event v4 plan_match schema is invalid")
+    if "local_tokens" in properties_v4 or "token_estimate" in properties_v4:
+        fail("public event v4 schema exposes exact local tokens")
+    jsonschema.Draft202012Validator.check_schema(schema_v4)
+    public_v4_validator = jsonschema.Draft202012Validator(
+        schema_v4, format_checker=jsonschema.FormatChecker()
+    )
     ids = set()
     events = []
     manifest_paths = (
@@ -75,7 +91,7 @@ def validate(root: Path, base_ref: str | None = None) -> None:
     for manifest_path in reversed(ordered):
         manifest = json.loads(manifest_path.read_text())
         batch = target / "batches" / manifest["batch"]
-        if manifest.get("schema_version") not in {2, 3} or manifest.get("count") != len(
+        if manifest.get("schema_version") not in {2, 3, 4} or manifest.get("count") != len(
             sync_evolution_data.read_jsonl(batch)
         ):
             fail("manifest schema/count mismatch")
@@ -84,8 +100,10 @@ def validate(root: Path, base_ref: str | None = None) -> None:
         for event in sync_evolution_data.read_jsonl(batch):
             events.append(event)
             try:
-                router_core.validate_evidence_event(event)
-            except ValueError as error:
+                router_core.validate_public_evidence_event(event)
+                if event.get("schema_version") == 4:
+                    public_v4_validator.validate(event)
+            except (ValueError, jsonschema.ValidationError) as error:
                 fail(f"invalid event v{event.get('schema_version')}: {error}")
             if event["event_id"] in ids:
                 fail("duplicate event id")
@@ -106,6 +124,8 @@ def validate(root: Path, base_ref: str | None = None) -> None:
         }
         if not required.issubset(metrics):
             fail("metrics artifact is incomplete")
+        if metrics.get("schema_version") == 4 and metrics.get("release_version") != "1.3.0":
+            fail("v4 metrics release version is invalid")
     if events and metric_paths:
         with tempfile.TemporaryDirectory() as directory:
             data_root = Path(directory)
@@ -124,9 +144,12 @@ def validate(root: Path, base_ref: str | None = None) -> None:
                 encoding="utf-8"
             )
         )
-        if latest_metrics.get("schema_version") == 2:
+        if latest_metrics.get("schema_version") in {2, 3}:
             recomputed = {
-                key: (2 if key == "schema_version" else recomputed.get(key))
+                key: (
+                    latest_metrics["schema_version"]
+                    if key == "schema_version" else recomputed.get(key)
+                )
                 for key in latest_metrics
             }
         if recomputed != latest_metrics:

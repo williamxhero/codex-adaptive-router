@@ -2,7 +2,7 @@
   "event_count": 4323,
   "manifest": "manifest-36a5e3eb2b81c762af531c4fd9f8dfb5708d9d216ec59f43334edd81f9f4e2b9.json",
   "manifest_sha256": "280bf4718af08651229ade1228d8dbdb6e8514cfe41703f67b67b380f7350611",
-  "metrics_revision": 3,
+  "metrics_revision": 4,
   "policy_revision": 1,
-  "schema_version": 3
+  "schema_version": 4
 }

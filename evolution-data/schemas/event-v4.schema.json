@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Adaptive Router privacy-bounded public evidence event v4",
+  "type": "object",
+  "required": ["schema_version", "event_id", "sequence", "type", "created_at", "task_ref", "route_id"],
+  "$defs": {
+    "model": {"enum": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]},
+    "effort": {"enum": ["low", "medium", "high", "xhigh", "max", "ultra"]},
+    "role": {"enum": ["direct", "router_code_mapper", "router_experiment_runner", "router_research_engineer", "router_researcher", "router_quant_researcher", "router_architect", "router_adversarial_auditor", "router_strategy_scout"]},
+    "taskClass": {"enum": ["direct", "discovery", "execution", "implementation", "diagnosis", "research", "architecture", "audit", "exploration"]},
+    "stageName": {"enum": ["frame", "collect", "implement", "verify", "synthesize", "audit"]},
+    "executionTarget": {"enum": ["direct", "subagent", "visible_task"]},
+    "executionMode": {"enum": ["root", "delegated", "isolated"]},
+    "decisionFeatures": {
+      "type": "object",
+      "required": ["feature_version", "operation_mode", "scope", "spec_state", "reversibility", "cognitive_type", "risk_domains", "workload", "verification_depth", "evidence_state", "decision_impact", "novelty", "user_constraints", "feature_source", "confidence"],
+      "properties": {
+        "feature_version": {"const": 2},
+        "operation_mode": {"enum": ["answer", "diagnose", "change", "review", "research", "execute", "monitor"]},
+        "scope": {"enum": ["tiny", "bounded", "multi_file", "cross_system"]},
+        "spec_state": {"enum": ["unknown", "ambiguous", "frozen"]},
+        "reversibility": {"enum": ["reversible", "costly", "irreversible"]},
+        "cognitive_type": {"$ref": "#/$defs/taskClass"},
+        "risk_domains": {"type": "array", "items": {"enum": ["quantitative_research", "high_impact", "security", "privacy", "production", "financial", "legal", "medical"]}},
+        "workload": {"enum": ["small", "medium", "large", "batch"]},
+        "verification_depth": {"enum": ["basic", "standard", "deep", "adversarial"]},
+        "evidence_state": {"enum": ["unknown", "consistent", "conflicting"]},
+        "decision_impact": {"enum": ["low", "medium", "high", "critical"]},
+        "novelty": {"enum": ["routine", "novel", "open_ended"]},
+        "user_constraints": {"type": "array", "items": {"enum": ["role", "model", "reasoning_effort", "no_delegation"]}},
+        "feature_source": {"enum": ["structured_heuristic", "caller_supplied", "legacy_v1"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "role": {"$ref": "#/$defs/role"},
+        "model": {"$ref": "#/$defs/model"},
+        "reasoning_effort": {"$ref": "#/$defs/effort"},
+        "no_delegation": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "shadow": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["proposal_id", "axis", "candidate"],
+          "properties": {
+            "proposal_id": {"type": "string"},
+            "axis": {"enum": ["role", "model", "reasoning_effort"]},
+            "candidate": {"type": "string", "maxLength": 80}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "writerOwnership": {
+      "type": "object",
+      "required": ["mode", "owner"],
+      "properties": {"mode": {"const": "single_writer"}, "owner": {"$ref": "#/$defs/role"}},
+      "additionalProperties": false
+    },
+    "stage": {
+      "type": "object",
+      "required": ["stage", "authority", "role", "capability_floor", "model", "reasoning_effort", "required", "execution_target", "execution_mode", "delegation_depth", "writer_mode", "access_mode", "parallelism", "parallel_limit", "lease_required", "stage_id", "attempt"],
+      "properties": {
+        "stage": {"$ref": "#/$defs/stageName"},
+        "authority": {"enum": ["evidence", "implementation", "decision", "audit"]},
+        "role": {"$ref": "#/$defs/role"},
+        "capability_floor": {"$ref": "#/$defs/model"},
+        "model": {"$ref": "#/$defs/model"},
+        "reasoning_effort": {"$ref": "#/$defs/effort"},
+        "required": {"type": "boolean"},
+        "execution_target": {"$ref": "#/$defs/executionTarget"},
+        "execution_mode": {"$ref": "#/$defs/executionMode"},
+        "delegation_depth": {"type": "integer", "minimum": 0, "maximum": 2},
+        "writer_mode": {"enum": ["read_only", "single_writer"]},
+        "access_mode": {"enum": ["read_only", "writer"]},
+        "parallelism": {"enum": ["serial", "independent_read_only"]},
+        "parallel_limit": {"type": "integer", "minimum": 1, "maximum": 3},
+        "lease_required": {"type": "boolean"},
+        "stage_id": {"type": "string", "pattern": "^[0-9a-f]{24,64}$"},
+        "attempt": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "capabilityException": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["requested_model", "required_floor", "disposition", "decision_owner_model", "reason"],
+          "properties": {
+            "requested_model": {"$ref": "#/$defs/model"},
+            "required_floor": {"$ref": "#/$defs/model"},
+            "disposition": {"const": "worker_only"},
+            "decision_owner_model": {"const": "gpt-5.6-sol"},
+            "reason": {"const": "requested_model_below_capability_floor"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "handoffContract": {
+      "type": "object",
+      "required": ["input_contract", "deliverable", "acceptance", "failure_disposition"],
+      "properties": {
+        "input_contract": {"const": "frozen_scope"},
+        "deliverable": {"const": "bounded_result"},
+        "acceptance": {"const": "root_quality_gate"},
+        "failure_disposition": {"const": "freeze_and_reroute"}
+      },
+      "additionalProperties": false
+    },
+    "transition": {
+      "type": "object",
+      "required": ["phase", "role", "model", "reasoning_effort"],
+      "properties": {
+        "phase": {"enum": ["start", "stop"]},
+        "role": {"enum": ["direct", "router_code_mapper", "router_experiment_runner", "router_research_engineer", "router_researcher", "router_quant_researcher", "router_architect", "router_adversarial_auditor", "router_strategy_scout", "default", "worker", "explorer", "unknown"]},
+        "model": {"oneOf": [{"$ref": "#/$defs/model"}, {"const": "unknown"}]},
+        "reasoning_effort": {"oneOf": [{"$ref": "#/$defs/effort"}, {"const": "unknown"}]},
+        "stage": {"oneOf": [{"$ref": "#/$defs/stageName"}, {"const": "unknown"}]},
+        "execution_target": {"$ref": "#/$defs/executionTarget"},
+        "delegation_depth": {"type": "integer", "minimum": 0, "maximum": 2},
+        "lease_id": {"type": "string", "pattern": "^[0-9a-f]{24,64}$"},
+        "writer_mode": {"enum": ["read_only", "single_writer"]}
+      },
+      "additionalProperties": false
+    },
+    "replacement": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "required": ["role", "model", "reasoning_effort"], "properties": {"role": {"$ref": "#/$defs/role"}, "model": {"$ref": "#/$defs/model"}, "reasoning_effort": {"$ref": "#/$defs/effort"}}, "additionalProperties": false}
+      ]
+    },
+    "observedExecution": {
+      "type": "object",
+      "required": ["role", "model", "reasoning_effort", "execution_target"],
+      "properties": {
+        "role": {"oneOf": [{"$ref": "#/$defs/role"}, {"const": "unknown"}]},
+        "model": {"oneOf": [{"$ref": "#/$defs/model"}, {"const": "unknown"}]},
+        "reasoning_effort": {"oneOf": [{"$ref": "#/$defs/effort"}, {"const": "unknown"}]},
+        "execution_target": {"oneOf": [{"$ref": "#/$defs/executionTarget"}, {"const": "unknown"}]}
+      },
+      "additionalProperties": false
+    },
+    "stageLease": {
+      "type": "object",
+      "required": ["lease_id", "status"],
+      "properties": {"lease_id": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{24,64}$"}, {"const": "unknown"}]}, "status": {"enum": ["active", "completed", "failed", "frozen", "released", "unknown"]}},
+      "additionalProperties": false
+    },
+    "auditFollowup": {
+      "allOf": [
+        {"$ref": "#/$defs/stage"},
+        {"properties": {"stage": {"const": "audit"}, "authority": {"const": "audit"}, "role": {"const": "router_adversarial_auditor"}, "capability_floor": {"const": "gpt-5.6-sol"}, "model": {"const": "gpt-5.6-sol"}, "reasoning_effort": {"const": "xhigh"}, "required": {"const": true}}}
+      ]
+    },
+    "hasRouteOnlyField": {
+      "anyOf": [
+        {"required": ["task_fingerprint"]}, {"required": ["profile"]}, {"required": ["task_class"]}, {"required": ["role"]}, {"required": ["model"]}, {"required": ["reasoning_effort"]}, {"required": ["decision_features"]}, {"required": ["constraints"]}, {"required": ["policy_revision"]}, {"required": ["shadow"]}, {"required": ["session"]}, {"required": ["project"]}, {"required": ["plan_version"]}, {"required": ["profile_version"]}, {"required": ["capability_floor"]}, {"required": ["effort_basis"]}, {"required": ["route_mode"]}, {"required": ["stages"]}, {"required": ["capability_exception"]}, {"required": ["execution_target"]}, {"required": ["execution_mode"]}, {"required": ["writer_ownership"]}, {"required": ["dispatch_ready"]}, {"required": ["dispatch_blocker"]}, {"required": ["handoff_contract"]}
+      ]
+    },
+    "hasExecutionOnlyField": {
+      "anyOf": [
+        {"required": ["event"]}, {"required": ["tool_kind"]}, {"required": ["failed"]}, {"required": ["verification_kind"]}, {"required": ["transition"]}
+      ]
+    },
+    "hasOutcomeOnlyField": {
+      "anyOf": [
+        {"required": ["status"]}, {"required": ["quality_gate"]}, {"required": ["route_fit"]}, {"required": ["verification_kinds"]}, {"required": ["evidence_source"]}, {"required": ["objective_verification"]}, {"required": ["user_confirmed"]}, {"required": ["replacement"]}, {"required": ["high_risk_regression"]}, {"required": ["retry_band"]}, {"required": ["rework_band"]}, {"required": ["tool_band"]}, {"required": ["duration_band"]}, {"required": ["token_band"]}, {"required": ["cost_band"]}, {"required": ["stage"]}, {"required": ["model_fit"]}, {"required": ["effort_fit"]}, {"required": ["context_fit"]}, {"required": ["tool_data_fit"]}, {"required": ["failure_axis"]}, {"required": ["result_signal"]}, {"required": ["stage_source"]}, {"required": ["audit_followup"]}, {"required": ["dispatch_mode"]}, {"required": ["observed_execution"]}, {"required": ["plan_match"]}, {"required": ["boundary_status"]}, {"required": ["scope_status"]}, {"required": ["verification_status"]}, {"required": ["stage_lease"]}
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {"const": 4},
+    "event_id": {"type": "string", "format": "uuid"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "type": {"enum": ["route", "execution", "outcome"]},
+    "created_at": {"type": "string", "maxLength": 40},
+    "dedupe_key": {"type": "string", "pattern": "^[A-Za-z0-9:._-]{1,180}$"},
+    "task_ref": {"type": "string", "pattern": "^[0-9a-f]{24,64}$"},
+    "route_id": {"type": "string", "format": "uuid"},
+    "task_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{24,64}$"},
+    "profile": {"enum": ["generic", "quant"]},
+    "task_class": {"$ref": "#/$defs/taskClass"},
+    "role": {"$ref": "#/$defs/role"},
+    "model": {"$ref": "#/$defs/model"},
+    "reasoning_effort": {"$ref": "#/$defs/effort"},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "decision_features": {"$ref": "#/$defs/decisionFeatures"},
+    "constraints": {"$ref": "#/$defs/constraints"},
+    "policy_revision": {"type": "integer", "minimum": 1},
+    "shadow": {"$ref": "#/$defs/shadow"},
+    "session": {"type": "string", "pattern": "^[0-9a-f]{24,64}$"},
+    "project": {"type": "string", "pattern": "^[0-9a-f]{24,64}$"},
+    "plan_version": {"const": 3},
+    "profile_version": {"const": 4},
+    "capability_floor": {"$ref": "#/$defs/model"},
+    "effort_basis": {"type": "array", "items": {"enum": ["mechanical_basic", "default", "broad_scope", "frozen_implementation", "deep_verification", "conflicting_evidence", "costly_impact", "audit", "open_ended", "irreversible_or_critical", "high_impact_exceptional_result", "explicit_constraint", "policy_override", "role_clamp"]}},
+    "route_mode": {"enum": ["single", "staged"]},
+    "stages": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stage"}},
+    "capability_exception": {"$ref": "#/$defs/capabilityException"},
+    "execution_target": {"$ref": "#/$defs/executionTarget"},
+    "execution_mode": {"$ref": "#/$defs/executionMode"},
+    "delegation_depth": {"type": "integer", "minimum": 0, "maximum": 2},
+    "writer_ownership": {"$ref": "#/$defs/writerOwnership"},
+    "dispatch_ready": {"type": "boolean"},
+    "dispatch_blocker": {"enum": ["none", "worker_unavailable", "visible_task_unavailable", "quality_floor_requires_specialist", "delegation_depth_exceeded", "parent_lease_required", "parent_lease_inactive", "read_only_concurrency_exceeded", "writer_lease_conflict", "independent_read_only_not_declared", "duplicate_independence_key", "visible_task_root_only", "visible_task_title_invalid"]},
+    "handoff_contract": {"$ref": "#/$defs/handoffContract"},
+    "event": {"enum": ["PostToolUse", "SubagentStart", "SubagentStop", "SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "ArchiveObserved"]},
+    "tool_kind": {"enum": ["shell", "edit", "agent", "mcp", "local", "lifecycle"]},
+    "failed": {"type": "boolean"},
+    "verification_kind": {"oneOf": [{"enum": ["tests", "build", "static_validation", "review"]}, {"type": "null"}]},
+    "transition": {"$ref": "#/$defs/transition"},
+    "status": {"enum": ["completed", "verified", "failed", "corrected", "escalated", "overridden"]},
+    "quality_gate": {"enum": ["unknown", "provisional", "passed", "failed"]},
+    "route_fit": {"enum": ["unknown", "adequate", "under_routed", "over_routed"]},
+    "verification_kinds": {"type": "array", "items": {"enum": ["tests", "build", "static_validation", "review"]}},
+    "evidence_source": {"enum": ["objective", "hook_heuristic", "user_explicit", "legacy_v1"]},
+    "objective_verification": {"type": "boolean"},
+    "user_confirmed": {"type": "boolean"},
+    "replacement": {"$ref": "#/$defs/replacement"},
+    "high_risk_regression": {"type": "boolean"},
+    "retry_band": {"enum": ["unknown", "low", "medium", "high", "very_high"]},
+    "rework_band": {"enum": ["unknown", "low", "medium", "high", "very_high"]},
+    "tool_band": {"enum": ["unknown", "low", "medium", "high", "very_high"]},
+    "duration_band": {"enum": ["unknown", "low", "medium", "high", "very_high"]},
+    "token_band": {"enum": ["unknown", "low", "medium", "high", "very_high"]},
+    "cost_band": {"enum": ["unknown", "low", "medium", "high", "very_high"]},
+    "stage": {"$ref": "#/$defs/stageName"},
+    "model_fit": {"enum": ["under", "adequate", "over", "unknown"]},
+    "effort_fit": {"enum": ["under", "adequate", "over", "unknown"]},
+    "context_fit": {"enum": ["adequate", "deficient", "unknown"]},
+    "tool_data_fit": {"enum": ["adequate", "deficient", "unknown"]},
+    "failure_axis": {"enum": ["model_capability", "reasoning_budget", "context", "tool_data", "execution", "none", "confounded"]},
+    "result_signal": {"enum": ["normal", "exceptional_positive", "exceptional_negative", "unknown"]},
+    "stage_source": {"enum": ["caller_supplied", "lifecycle_inferred", "single_stage_inferred", "unknown"]},
+    "audit_followup": {"$ref": "#/$defs/auditFollowup"},
+    "dispatch_mode": {"$ref": "#/$defs/executionTarget"},
+    "observed_execution": {"$ref": "#/$defs/observedExecution"},
+    "plan_match": {"enum": ["unknown", "matched", "deviated"]},
+    "boundary_status": {"enum": ["unknown", "passed", "failed"]},
+    "scope_status": {"enum": ["unknown", "passed", "failed"]},
+    "verification_status": {"enum": ["unknown", "provisional", "passed", "failed"]},
+    "archive_status": {"enum": ["not_applicable", "not_ready", "eligible", "requested", "archived", "failed"]},
+    "stage_lease": {"$ref": "#/$defs/stageLease"}
+  },
+  "allOf": [
+    {"if": {"properties": {"type": {"const": "route"}}, "required": ["type"]}, "then": {"required": ["task_fingerprint", "profile", "task_class", "role", "model", "reasoning_effort", "confidence", "decision_features", "constraints", "policy_revision", "shadow", "session", "project", "plan_version", "profile_version", "capability_floor", "effort_basis", "route_mode", "stages", "capability_exception", "execution_target", "execution_mode", "delegation_depth", "writer_ownership", "dispatch_ready", "dispatch_blocker", "handoff_contract"], "not": {"anyOf": [{"$ref": "#/$defs/hasExecutionOnlyField"}, {"$ref": "#/$defs/hasOutcomeOnlyField"}, {"required": ["archive_status"]}]}}},
+    {"if": {"properties": {"type": {"const": "execution"}}, "required": ["type"]}, "then": {"required": ["event"], "not": {"anyOf": [{"$ref": "#/$defs/hasRouteOnlyField"}, {"$ref": "#/$defs/hasOutcomeOnlyField"}]}}},
+    {"if": {"properties": {"type": {"const": "execution"}, "event": {"const": "ArchiveObserved"}}, "required": ["type", "event"]}, "then": {"required": ["archive_status"], "properties": {"archive_status": {"const": "archived"}}}},
+    {"if": {"properties": {"type": {"const": "execution"}, "event": {"not": {"const": "ArchiveObserved"}}}, "required": ["type", "event"]}, "then": {"not": {"required": ["archive_status"]}}},
+    {"if": {"properties": {"type": {"const": "outcome"}}, "required": ["type"]}, "then": {"required": ["status", "quality_gate", "route_fit", "verification_kinds", "confidence", "evidence_source", "objective_verification", "user_confirmed", "replacement", "high_risk_regression", "retry_band", "rework_band", "tool_band", "duration_band", "token_band", "cost_band", "model_fit", "effort_fit", "context_fit", "tool_data_fit", "failure_axis", "result_signal", "stage_source", "dispatch_mode", "observed_execution", "plan_match", "boundary_status", "scope_status", "verification_status", "archive_status", "delegation_depth", "stage_lease"], "not": {"anyOf": [{"$ref": "#/$defs/hasRouteOnlyField"}, {"$ref": "#/$defs/hasExecutionOnlyField"}]}}}
+  ],
+  "additionalProperties": false
+}
