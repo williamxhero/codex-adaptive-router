@@ -60,6 +60,36 @@ FEATURE_VALUES = {
         "exploration",
     },
     "workload": {"small", "medium", "large", "batch"},
+    "verification_depth": {"basic", "standard", "deep", "adversarial"},
+    "evidence_state": {"unknown", "consistent", "conflicting"},
+    "decision_impact": {"low", "medium", "high", "critical"},
+    "novelty": {"routine", "novel", "open_ended"},
+}
+MODEL_ORDER = {"gpt-5.6-luna": 1, "gpt-5.6-terra": 2, "gpt-5.6-sol": 3}
+EFFORT_ORDER = {"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6}
+AUTHORITY_FLOORS = {
+    "evidence": "gpt-5.6-luna",
+    "implementation": "gpt-5.6-terra",
+    "decision": "gpt-5.6-sol",
+    "audit": "gpt-5.6-sol",
+}
+STAGE_NAMES = {"frame", "collect", "implement", "verify", "synthesize", "audit"}
+AUTHORITIES = set(AUTHORITY_FLOORS)
+EFFORT_BASES = {
+    "mechanical_basic",
+    "default",
+    "broad_scope",
+    "frozen_implementation",
+    "deep_verification",
+    "conflicting_evidence",
+    "costly_impact",
+    "audit",
+    "open_ended",
+    "irreversible_or_critical",
+    "high_impact_exceptional_result",
+    "explicit_constraint",
+    "policy_override",
+    "role_clamp",
 }
 KNOWN_RISK_DOMAINS = {
     "quantitative_research",
@@ -125,12 +155,24 @@ def validate_constraints(value: Any) -> dict[str, Any]:
 
 
 def validate_decision_features(value: Any) -> dict[str, Any]:
-    required = {
+    v1_required = {
         "operation_mode", "scope", "spec_state", "reversibility", "cognitive_type",
         "risk_domains", "workload", "user_constraints", "feature_source", "confidence",
     }
-    features = _strict_object(value, required, required, "decision_features")
+    v2_fields = {
+        "feature_version", "verification_depth", "evidence_state", "decision_impact", "novelty"
+    }
+    if not isinstance(value, dict):
+        raise TypeError("decision_features must be an object")
+    is_v2 = value.get("feature_version") == 2
+    required = v1_required | (v2_fields if is_v2 else set())
+    allowed_fields = v1_required | v2_fields
+    features = _strict_object(value, allowed_fields, required, "decision_features")
+    if "feature_version" in features and not is_v2:
+        raise ValueError("decision_features.feature_version is invalid")
     for key, allowed in FEATURE_VALUES.items():
+        if key not in features:
+            continue
         if features[key] not in allowed:
             raise ValueError(f"decision_features.{key} is invalid")
     if not isinstance(features["risk_domains"], list) or any(
@@ -174,12 +216,50 @@ def _validate_replacement(value: Any) -> None:
         raise ValueError("replacement route is invalid")
 
 
+def _validate_stage(value: Any) -> None:
+    stage = _strict_object(
+        value,
+        {"stage", "authority", "role", "capability_floor", "model", "reasoning_effort", "required"},
+        {"stage", "authority", "role", "capability_floor", "model", "reasoning_effort", "required"},
+        "route stage",
+    )
+    if stage["stage"] not in STAGE_NAMES or stage["authority"] not in AUTHORITIES:
+        raise ValueError("route stage classification is invalid")
+    if stage["role"] not in VALID_ROLES or stage["model"] not in VALID_MODELS:
+        raise ValueError("route stage tuple is invalid")
+    expected_floor = AUTHORITY_FLOORS[stage["authority"]]
+    if stage["capability_floor"] != expected_floor or MODEL_ORDER[stage["model"]] < MODEL_ORDER[expected_floor]:
+        raise ValueError("route stage violates capability floor")
+    if stage["reasoning_effort"] not in VALID_EFFORTS or type(stage["required"]) is not bool:
+        raise ValueError("route stage effort/required is invalid")
+
+
+def _validate_capability_exception(value: Any) -> None:
+    if value is None:
+        return
+    exception = _strict_object(
+        value,
+        {"requested_model", "required_floor", "disposition", "decision_owner_model", "reason"},
+        {"requested_model", "required_floor", "disposition", "decision_owner_model", "reason"},
+        "capability_exception",
+    )
+    if (
+        exception["requested_model"] not in VALID_MODELS
+        or exception["required_floor"] not in VALID_MODELS
+        or exception["disposition"] != "worker_only"
+        or exception["decision_owner_model"] != "gpt-5.6-sol"
+        or exception["reason"] != "requested_model_below_capability_floor"
+    ):
+        raise ValueError("capability_exception is invalid")
+
+
 def validate_evidence_event(value: Any) -> dict[str, Any]:
     common = {"schema_version", "event_id", "sequence", "created_at", "dedupe_key", "type"}
     route = {
         "task_ref", "task_fingerprint", "route_id", "profile", "task_class", "role", "model",
         "reasoning_effort", "confidence", "decision_features", "constraints", "policy_revision",
-        "shadow", "session", "project",
+        "shadow", "session", "project", "plan_version", "capability_floor", "effort_basis",
+        "route_mode", "stages", "capability_exception",
     }
     execution = {"task_ref", "route_id", "event", "tool_kind", "failed", "verification_kind", "transition"}
     outcome = {
@@ -192,7 +272,10 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
         raise ValueError("evidence event type is invalid")
     event_type = value["type"]
     allowed = common | ({"route": route, "execution": execution, "outcome": outcome}[event_type])
-    required = common - {"dedupe_key"} | ({"route": route, "execution": {"task_ref", "route_id", "event"}, "outcome": outcome}[event_type])
+    legacy_route = route - {
+        "plan_version", "capability_floor", "effort_basis", "route_mode", "stages", "capability_exception"
+    }
+    required = common - {"dedupe_key"} | ({"route": legacy_route, "execution": {"task_ref", "route_id", "event"}, "outcome": outcome}[event_type])
     event = _strict_object(value, allowed, required, f"{event_type} event")
     if event["schema_version"] != 2 or not isinstance(event["sequence"], int) or isinstance(event["sequence"], bool) or event["sequence"] < 1:
         raise ValueError("evidence sequence/schema is invalid")
@@ -216,6 +299,20 @@ def validate_evidence_event(value: Any) -> dict[str, Any]:
             raise ValueError("route classification is invalid")
         if event["role"] not in VALID_ROLES or event["model"] not in VALID_MODELS or event["reasoning_effort"] not in VALID_EFFORTS:
             raise ValueError("route tuple is invalid")
+        if "plan_version" in event:
+            if event["plan_version"] != 2 or event.get("route_mode") not in {"single", "staged"}:
+                raise ValueError("route plan version/mode is invalid")
+            if event.get("capability_floor") not in VALID_MODELS or MODEL_ORDER[event["model"]] < MODEL_ORDER[event["capability_floor"]]:
+                raise ValueError("route violates capability floor")
+            if not isinstance(event.get("effort_basis"), list) or any(
+                basis not in EFFORT_BASES for basis in event["effort_basis"]
+            ):
+                raise ValueError("route effort_basis is invalid")
+            if not isinstance(event.get("stages"), list) or not event["stages"]:
+                raise ValueError("route stages are invalid")
+            for stage in event["stages"]:
+                _validate_stage(stage)
+            _validate_capability_exception(event.get("capability_exception"))
         if not _is_number(event["confidence"]) or not 0 <= event["confidence"] <= 1:
             raise ValueError("route confidence is invalid")
         if not isinstance(event["policy_revision"], int) or isinstance(event["policy_revision"], bool) or event["policy_revision"] < 1:
@@ -771,6 +868,14 @@ CORRECTION_TERMS = (
     "不是我要",
 )
 OVERRIDE_TERMS = ("use instead", "switch to", "override", "改用", "换成", "指定")
+EXCEPTIONAL_TERMS = (
+    "exceptional",
+    "anomalous",
+    "unusually good",
+    "best ever",
+    "异常优秀",
+    "异常强",
+)
 
 
 def infer_profile(task: str, requested: str | None = None) -> str:
@@ -784,6 +889,7 @@ def infer_decision_features(
 ) -> dict[str, Any]:
     text = _normalise(task)
     features = {
+        "feature_version": 2,
         "operation_mode": "answer",
         "scope": (
             "tiny"
@@ -795,6 +901,10 @@ def infer_decision_features(
         "cognitive_type": "direct",
         "risk_domains": [],
         "workload": "small" if len(text) < 180 else "medium",
+        "verification_depth": "standard",
+        "evidence_state": "unknown",
+        "decision_impact": "low",
+        "novelty": "routine",
         "user_constraints": [],
         "feature_source": "structured_heuristic",
         "confidence": 0.72,
@@ -840,6 +950,14 @@ def infer_decision_features(
         ("production", "security", "privacy", "deploy", "生产", "安全", "隐私", "部署"),
     ):
         features["risk_domains"].append("high_impact")
+        features["decision_impact"] = "high"
+    if features["scope"] in {"multi_file", "cross_system"}:
+        features["decision_impact"] = "medium"
+    if features["cognitive_type"] in {"architecture", "audit"}:
+        features["verification_depth"] = "deep"
+        features["decision_impact"] = "high"
+    if features["cognitive_type"] == "exploration":
+        features["novelty"] = "open_ended"
     if supplied:
         allowed = set(features)
         for key, value in supplied.items():
@@ -847,6 +965,8 @@ def infer_decision_features(
                 raise ValueError(f"unknown decision feature: {key}")
             if key in FEATURE_VALUES and value not in FEATURE_VALUES[key]:
                 raise ValueError(f"invalid decision feature {key}: {value}")
+            if key == "feature_version" and value != 2:
+                raise ValueError("invalid decision feature feature_version")
             if key == "risk_domains" and (
                 not isinstance(value, list)
                 or any(x not in KNOWN_RISK_DOMAINS for x in value)
@@ -894,16 +1014,17 @@ class RoutePlan:
     output_contract: str
     decision_features: dict[str, Any]
     constraints: dict[str, Any]
+    plan_version: int
+    capability_floor: str
+    effort_basis: list[str]
+    route_mode: str
+    stages: list[dict[str, Any]]
+    capability_exception: dict[str, Any] | None
     shadow_recommendation: dict[str, Any] | None = None
 
 
 def _capability_rank(model: str, effort: str) -> tuple[int, int]:
-    return (
-        {"gpt-5.6-luna": 1, "gpt-5.6-terra": 2, "gpt-5.6-sol": 3}.get(model, 0),
-        {"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "ultra": 6}.get(
-            effort, 0
-        ),
-    )
+    return (MODEL_ORDER.get(model, 0), EFFORT_ORDER.get(effort, 0))
 
 
 def _active_overrides(
@@ -958,6 +1079,10 @@ def _validate_route_tuple(
     allowed_models = list(
         config.get("allowed_models") or [config.get("default_model") or config.get("model")]
     )
+    authority = str(config.get("authority") or "decision")
+    floor = str(config.get("capability_floor") or AUTHORITY_FLOORS[authority])
+    if floor != AUTHORITY_FLOORS.get(authority) or MODEL_ORDER.get(model, 0) < MODEL_ORDER.get(floor, 99):
+        raise ValueError(f"model {model} is below capability floor {floor} for role {role}")
     if model not in VALID_MODELS or model not in allowed_models:
         raise ValueError(f"model {model} is not allowed for role {role}")
     if effort not in VALID_EFFORTS:
@@ -978,6 +1103,118 @@ def _validate_route_tuple(
     return config
 
 
+def _clamp_effort(effort: str, config: dict[str, Any]) -> tuple[str, bool]:
+    bounds = config["effort"]
+    minimum = str(bounds["min"])
+    maximum = str(bounds["max"])
+    rank = min(max(EFFORT_ORDER[effort], EFFORT_ORDER[minimum]), EFFORT_ORDER[maximum])
+    selected = next(name for name, value in EFFORT_ORDER.items() if value == rank)
+    return selected, selected != effort
+
+
+def _deterministic_effort(
+    features: dict[str, Any], config: dict[str, Any], explicit: str | None = None
+) -> tuple[str, list[str]]:
+    if explicit is not None:
+        effort, clamped = _clamp_effort(explicit, config)
+        basis = ["explicit_constraint"]
+        if clamped:
+            basis.append("role_clamp")
+        return effort, basis
+
+    candidates: list[tuple[str, str]] = [("medium", "default")]
+    if (
+        features["cognitive_type"] == "direct"
+        and features["scope"] == "tiny"
+        and features["reversibility"] == "reversible"
+        and features["evidence_state"] != "conflicting"
+        and features["verification_depth"] == "basic"
+    ):
+        candidates.append(("low", "mechanical_basic"))
+    if features["scope"] in {"multi_file", "cross_system"}:
+        candidates.append(("high", "broad_scope"))
+    if features["cognitive_type"] == "implementation" and features["spec_state"] == "frozen":
+        candidates.append(("high", "frozen_implementation"))
+    if features["verification_depth"] == "deep":
+        candidates.append(("high", "deep_verification"))
+    if features["evidence_state"] == "conflicting":
+        candidates.append(("high", "conflicting_evidence"))
+    if features["decision_impact"] == "high" or features["reversibility"] == "costly":
+        candidates.append(("high", "costly_impact"))
+    if features["cognitive_type"] == "audit" or features["verification_depth"] == "adversarial":
+        candidates.append(("xhigh", "audit"))
+    if features["novelty"] == "open_ended":
+        candidates.append(("xhigh", "open_ended"))
+    if features["reversibility"] == "irreversible" or features["decision_impact"] == "critical":
+        candidates.append(("xhigh", "irreversible_or_critical"))
+    highest = max(EFFORT_ORDER[effort] for effort, _ in candidates)
+    selected = next(effort for effort, rank in EFFORT_ORDER.items() if rank == highest)
+    basis = [basis for effort, basis in candidates if EFFORT_ORDER[effort] == highest]
+    selected, clamped = _clamp_effort(selected, config)
+    if clamped:
+        basis.append("role_clamp")
+    return selected, basis
+
+
+def _stage(
+    loaded: dict[str, Any], stage: str, authority: str, role: str, effort: str
+) -> dict[str, Any]:
+    config = _role_config(loaded, role)
+    floor = str(config["capability_floor"])
+    if authority != config["authority"]:
+        raise ValueError(f"role {role} cannot hold {authority} authority")
+    model = str(config["default_model"])
+    effort, _ = _clamp_effort(effort, config)
+    _validate_route_tuple(loaded, role, model, effort)
+    return {
+        "stage": stage,
+        "authority": authority,
+        "role": role,
+        "capability_floor": floor,
+        "model": model,
+        "reasoning_effort": effort,
+        "required": True,
+    }
+
+
+def _route_stages(
+    loaded: dict[str, Any], task_class: str, effort: str, *, add_audit: bool,
+    needs_implementation: bool = False,
+) -> list[dict[str, Any]]:
+    if task_class == "direct":
+        stages = [_stage(loaded, "synthesize", "decision", "direct", "medium")]
+    elif task_class in {"discovery", "execution"}:
+        worker = "router_code_mapper" if task_class == "discovery" else "router_experiment_runner"
+        stages = [
+            _stage(loaded, "collect", "evidence", worker, effort),
+            _stage(loaded, "synthesize", "decision", "direct", "medium"),
+        ]
+    elif task_class == "implementation":
+        stages = [
+            _stage(loaded, "frame", "decision", "direct", "medium"),
+            _stage(loaded, "implement", "implementation", "router_research_engineer", effort),
+            _stage(loaded, "verify", "evidence", "router_experiment_runner", "medium"),
+            _stage(loaded, "synthesize", "decision", "direct", "medium"),
+        ]
+    elif task_class in {"research", "diagnosis", "architecture", "exploration", "audit"}:
+        stages = [
+            _stage(loaded, "frame", "decision", "direct", effort),
+            _stage(loaded, "collect", "evidence", "router_code_mapper", "medium"),
+        ]
+        if needs_implementation:
+            stages.append(
+                _stage(loaded, "implement", "implementation", "router_research_engineer", "high")
+            )
+        stages.append(_stage(loaded, "synthesize", "decision", "direct", effort))
+    else:
+        stages = [_stage(loaded, "synthesize", "decision", "direct", "medium")]
+    if add_audit and stages[-1]["stage"] != "audit":
+        stages.append(
+            _stage(loaded, "audit", "audit", "router_adversarial_auditor", "xhigh")
+        )
+    return stages
+
+
 def make_route_plan(
     task: str,
     *,
@@ -994,79 +1231,116 @@ def make_route_plan(
     if task_state not in TASK_STATES:
         raise ValueError("invalid task_state")
     selected = infer_profile(task, profile)
+    constraints = validate_constraints(constraints)
     features = infer_decision_features(
         task, task_state=task_state, supplied=decision_features
     )
+    features["user_constraints"] = sorted(constraints)
     task_class = str(features["cognitive_type"])
     if task_class == "implementation" and features["spec_state"] != "frozen":
         task_class = "research"
     role = force_role or ROLE_BY_COGNITIVE.get(task_class, "direct")
-    constraints = validate_constraints(constraints)
     loaded = load_profile(selected)
     override = _active_overrides(load_policy(root), selected, task_class)
     if not force_role and "role" not in constraints and not constraints.get("no_delegation"):
         role = override.get("role", role)
     if constraints.get("no_delegation"):
         role = "direct"
+        task_class = "direct"
     elif constraints.get("role"):
         role = str(constraints["role"])
+
     config = _role_config(loaded, role)
-    model = str(config.get("default_model") or config.get("model"))
-    effort_config = config.get("effort")
-    effort = str(
-        config.get("effort_default")
-        or (
-            effort_config
-            if isinstance(effort_config, str)
-            else effort_config.get("default")
-        )
+    floor = str(config["capability_floor"])
+    default_model = str(config["default_model"])
+    requested_model = constraints.get("model", override.get("model"))
+    capability_exception = None
+    model = default_model
+    if requested_model:
+        requested_model = str(requested_model)
+        if MODEL_ORDER[requested_model] < MODEL_ORDER[floor]:
+            capability_exception = {
+                "requested_model": requested_model,
+                "required_floor": floor,
+                "disposition": "worker_only",
+                "decision_owner_model": "gpt-5.6-sol",
+                "reason": "requested_model_below_capability_floor",
+            }
+        else:
+            model = requested_model
+
+    explicit_effort = constraints.get("reasoning_effort")
+    policy_effort = override.get("reasoning_effort") if explicit_effort is None else None
+    effort, effort_basis = _deterministic_effort(
+        features,
+        config,
+        str(explicit_effort or policy_effort) if (explicit_effort or policy_effort) else None,
     )
-    if "model" not in constraints:
-        model = override.get("model", model)
-    if "reasoning_effort" not in constraints:
-        effort = override.get("reasoning_effort", effort)
-    model = str(constraints.get("model", model))
-    effort = str(constraints.get("reasoning_effort", effort))
-    config = _validate_route_tuple(
+    if policy_effort and "explicit_constraint" in effort_basis:
+        effort_basis[effort_basis.index("explicit_constraint")] = "policy_override"
+    _validate_route_tuple(
         loaded,
         role,
         model,
         effort,
-        explicit_effort="reasoning_effort" in constraints,
+        explicit_effort=bool(explicit_effort or policy_effort),
     )
-    if role in {
-        "router_research_engineer",
-        "router_code_mapper",
-        "router_experiment_runner",
-    } and task_class in {"architecture", "diagnosis", "research", "audit"}:
-        raise ValueError(
-            "Luna/Terra roles cannot own unresolved semantics or research conclusions"
-        )
-    escalation = list(
-        config.get("sol_escalation_conditions")
-        or [
-            "undefined semantics",
-            "unresolved research conclusion",
-            "irreversible decision",
-        ]
+
+    exceptional = _contains(_normalise(task), EXCEPTIONAL_TERMS)
+    add_audit = (
+        task_class == "audit"
+        or features["decision_impact"] in {"high", "critical"}
+        or exceptional
     )
-    return RoutePlan(
-        route_id or str(uuid.uuid4()),
-        selected,
+    if exceptional and "high_impact_exceptional_result" not in effort_basis:
+        effort_basis.append("high_impact_exceptional_result")
+    stages = _route_stages(
+        loaded,
         task_class,
-        role,
-        model,
         effort,
-        round(float(features["confidence"]), 2),
-        [
-            "structured decision features",
-            f"cognitive_type={features['cognitive_type']}",
-        ],
-        escalation,
-        "Return conclusion, compact evidence, uncertainty, and decisions reserved for the primary thread.",
-        features,
-        constraints,
-        _shadow_recommendation(selected, task_class, root),
+        add_audit=add_audit,
+        needs_implementation=(
+            task_class in {"research", "diagnosis"}
+            and features["operation_mode"] == "change"
+            and features["spec_state"] == "frozen"
+        ),
+    )
+    primary_stage_name = {
+        "discovery": "collect",
+        "execution": "collect",
+        "implementation": "implement",
+    }.get(task_class)
+    if primary_stage_name:
+        primary_stage = next(stage for stage in stages if stage["stage"] == primary_stage_name)
+        primary_stage.update(model=model, reasoning_effort=effort)
+    if capability_exception:
+        for stage in stages:
+            if stage["authority"] == "evidence" and MODEL_ORDER[str(requested_model)] >= MODEL_ORDER[stage["capability_floor"]]:
+                stage["model"] = str(requested_model)
+                break
+    escalation = list(config.get("sol_escalation_conditions") or [])
+    if config["authority"] in {"evidence", "implementation"} and not escalation:
+        escalation = ["undefined semantics", "unresolved research conclusion", "irreversible decision"]
+    return RoutePlan(
+        route_id=route_id or str(uuid.uuid4()),
+        profile=selected,
+        task_class=task_class,
+        role=role,
+        model=model,
+        reasoning_effort=effort,
+        confidence=round(float(features["confidence"]), 2),
+        reasons=["structured decision features", f"cognitive_type={features['cognitive_type']}"],
+        escalation_triggers=escalation,
+        output_contract="Return bounded stage evidence; the Sol primary thread owns final intent, integration, and conclusions.",
+        decision_features=features,
+        constraints=constraints,
+        plan_version=2,
+        capability_floor=floor,
+        effort_basis=effort_basis,
+        route_mode="single" if len(stages) == 1 else "staged",
+        stages=stages,
+        capability_exception=capability_exception,
+        shadow_recommendation=_shadow_recommendation(selected, task_class, root),
     )
 
 
@@ -1112,6 +1386,12 @@ class RouterEngine:
                         "constraints",
                         "policy_revision",
                         "shadow",
+                        "plan_version",
+                        "capability_floor",
+                        "effort_basis",
+                        "route_mode",
+                        "stages",
+                        "capability_exception",
                     )
                 }
                 value["tasks"][reference] = {
@@ -1178,6 +1458,12 @@ class RouterEngine:
             "confidence": plan.confidence,
             "decision_features": plan.decision_features,
             "constraints": plan.constraints,
+            "plan_version": plan.plan_version,
+            "capability_floor": plan.capability_floor,
+            "effort_basis": plan.effort_basis,
+            "route_mode": plan.route_mode,
+            "stages": plan.stages,
+            "capability_exception": plan.capability_exception,
             "policy_revision": 1,
             "shadow": plan.shadow_recommendation,
         }
@@ -1970,9 +2256,20 @@ def learning_proposals(root: Path | None = None) -> list[dict[str, Any]]:
             or float(outcome.get("confidence") or 0) < learning["minimum_confidence"]
         ):
             continue
+        changed_axes = {
+            axis
+            for axis in ("role", "model", "reasoning_effort")
+            if str(route.get(axis)) != str(replacement.get(axis))
+        }
         for axis in ("role", "model", "reasoning_effort"):
             before, after = str(route.get(axis)), str(replacement.get(axis))
             if before == after:
+                continue
+            if axis == "model" and changed_axes != {"model"}:
+                continue
+            if axis == "reasoning_effort" and changed_axes != {"reasoning_effort"}:
+                continue
+            if axis == "role" and "role" not in changed_axes:
                 continue
             profile_config = load_profile(str(route.get("profile")))
             try:

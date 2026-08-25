@@ -101,7 +101,153 @@ class RouterPlanTests(unittest.TestCase):
             plan = router_core.make_route_plan("Search code for references", root=root)
             self.assertEqual(
                 (plan.role, plan.model, plan.reasoning_effort),
-                ("router_researcher", "gpt-5.6-sol", "high"),
+                ("router_researcher", "gpt-5.6-sol", "medium"),
+            )
+
+    def test_decision_features_v2_accept_partial_and_fill_deterministically(self):
+        features = router_core.infer_decision_features(
+            "Investigate the failure",
+            supplied={
+                "verification_depth": "deep",
+                "evidence_state": "conflicting",
+            },
+        )
+        self.assertEqual(features["feature_version"], 2)
+        self.assertEqual(features["feature_source"], "caller_supplied")
+        self.assertEqual(features["verification_depth"], "deep")
+        self.assertEqual(features["evidence_state"], "conflicting")
+        self.assertIn(features["decision_impact"], {"low", "medium", "high", "critical"})
+        self.assertIn(features["novelty"], {"routine", "novel", "open_ended"})
+        with self.assertRaisesRegex(ValueError, "unknown decision feature"):
+            router_core.infer_decision_features("task", supplied={"task_kind": "bug"})
+        with self.assertRaisesRegex(ValueError, "invalid decision feature"):
+            router_core.infer_decision_features(
+                "task", supplied={"verification_depth": "exhaustive"}
+            )
+
+    def test_capability_floor_precedes_effort_and_decision_stays_sol_owned(self):
+        research = router_core.make_route_plan(
+            "Research an architecture decision",
+            decision_features={
+                "cognitive_type": "research",
+                "verification_depth": "deep",
+            },
+            constraints={"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"},
+        )
+        self.assertEqual(research.capability_floor, "gpt-5.6-sol")
+        self.assertEqual(research.model, "gpt-5.6-sol")
+        decision_stages = [
+            stage for stage in research.stages if stage["authority"] == "decision"
+        ]
+        self.assertTrue(decision_stages)
+        self.assertEqual(decision_stages[-1]["model"], "gpt-5.6-sol")
+        self.assertEqual(research.capability_exception["requested_model"], "gpt-5.6-terra")
+        self.assertEqual(research.capability_exception["disposition"], "worker_only")
+        self.assertTrue(
+            all(
+                stage["model"] == "gpt-5.6-sol"
+                for stage in research.stages
+                if stage["authority"] in {"decision", "audit"}
+            )
+        )
+
+    def test_route_plan_v2_templates_and_effort_precedence(self):
+        tiny = router_core.make_route_plan(
+            "Rename x",
+            decision_features={
+                "cognitive_type": "direct",
+                "scope": "tiny",
+                "verification_depth": "basic",
+            },
+        )
+        self.assertEqual((tiny.plan_version, tiny.route_mode), (2, "single"))
+        self.assertEqual(len(tiny.stages), 1)
+        self.assertEqual(
+            (tiny.stages[0]["role"], tiny.stages[0]["model"], tiny.stages[0]["reasoning_effort"]),
+            ("direct", "gpt-5.6-sol", "medium"),
+        )
+
+        discovery = router_core.make_route_plan(
+            "Search code for references",
+            decision_features={"cognitive_type": "discovery"},
+        )
+        self.assertEqual(discovery.route_mode, "staged")
+        self.assertEqual(
+            [(stage["stage"], stage["model"]) for stage in discovery.stages],
+            [("collect", "gpt-5.6-luna"), ("synthesize", "gpt-5.6-sol")],
+        )
+
+        implementation = router_core.make_route_plan(
+            "Implement the frozen multi-file change",
+            task_state="frozen",
+            decision_features={
+                "cognitive_type": "implementation",
+                "scope": "multi_file",
+                "spec_state": "frozen",
+            },
+        )
+        self.assertEqual(
+            [(stage["stage"], stage["model"]) for stage in implementation.stages],
+            [
+                ("frame", "gpt-5.6-sol"),
+                ("implement", "gpt-5.6-terra"),
+                ("verify", "gpt-5.6-luna"),
+                ("synthesize", "gpt-5.6-sol"),
+            ],
+        )
+        self.assertEqual(implementation.reasoning_effort, "high")
+        self.assertIn("broad_scope", implementation.effort_basis)
+
+        audit = router_core.make_route_plan(
+            "Review an exceptional strategy result",
+            profile="quant",
+            decision_features={
+                "cognitive_type": "research",
+                "decision_impact": "high",
+                "evidence_state": "consistent",
+                "novelty": "novel",
+            },
+        )
+        self.assertEqual(audit.stages[-1]["stage"], "audit")
+        self.assertEqual(audit.stages[-1]["reasoning_effort"], "xhigh")
+
+        quant_attribution = router_core.make_route_plan(
+            "Implement a frozen quant attribution study",
+            profile="quant",
+            task_state="frozen",
+            decision_features={
+                "operation_mode": "change",
+                "cognitive_type": "research",
+                "spec_state": "frozen",
+            },
+        )
+        self.assertEqual(
+            [stage["model"] for stage in quant_attribution.stages],
+            [
+                "gpt-5.6-sol",
+                "gpt-5.6-luna",
+                "gpt-5.6-terra",
+                "gpt-5.6-sol",
+            ],
+        )
+
+    def test_automatic_effort_never_uses_max_or_ultra(self):
+        cases = [
+            {"verification_depth": "adversarial"},
+            {"decision_impact": "critical"},
+            {"novelty": "open_ended"},
+            {"reversibility": "irreversible"},
+        ]
+        for supplied in cases:
+            plan = router_core.make_route_plan(
+                "Complex review", decision_features=supplied
+            )
+            self.assertNotIn(plan.reasoning_effort, {"max", "ultra"})
+            self.assertTrue(
+                all(
+                    stage["reasoning_effort"] not in {"max", "ultra"}
+                    for stage in plan.stages
+                )
             )
 
 
