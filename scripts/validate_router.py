@@ -30,7 +30,7 @@ def main() -> int:
     manifest = load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json")
     if (
         manifest.get("name") != "codex-adaptive-router"
-        or manifest.get("version") != "1.2.0"
+        or manifest.get("version") != "1.3.0"
     ):
         raise ValueError("manifest identity/version is invalid")
     mcp = load_json(PLUGIN_ROOT / ".mcp.json")
@@ -61,8 +61,23 @@ def main() -> int:
             )
     for profile_name in router_core.available_profiles():
         profile = router_core.load_profile(profile_name)
-        if profile.get("schema_version") != 3:
-            raise ValueError(f"{profile_name} must use profile schema v3")
+        if profile.get("schema_version") != 4:
+            raise ValueError(f"{profile_name} must use profile schema v4")
+        token_policy = profile.get("token_policy", {})
+        if (
+            token_policy.get("estimate_source") != "profile_prior"
+            or int(token_policy.get("minimum_direct_savings_tokens", -1)) < 0
+            or not 0 <= float(token_policy.get("minimum_direct_savings_ratio", -1)) <= 1
+        ):
+            raise ValueError(f"{profile_name} has an invalid token policy")
+        dispatch = profile.get("dispatch_policy", {})
+        if dispatch != {
+            "max_delegation_depth": 2,
+            "default_active_specialists_per_parent": 1,
+            "max_independent_read_only_children": 3,
+            "single_writer_per_repository": True,
+        }:
+            raise ValueError(f"{profile_name} has an invalid dispatch policy")
         for role, config in profile["roles"].items():
             if config.get("default_model") not in router_core.VALID_MODELS:
                 raise ValueError(f"{profile_name}/{role} uses an invalid model")
@@ -82,6 +97,10 @@ def main() -> int:
                 for model in config.get("allowed_models", [])
             ):
                 raise ValueError(f"{profile_name}/{role} allows a below-floor model")
+            if config.get("access_mode") not in {"read_only", "writer"}:
+                raise ValueError(f"{profile_name}/{role} has no access mode")
+            if not set(config.get("allowed_execution_modes", [])) <= router_core.EXECUTION_TARGETS:
+                raise ValueError(f"{profile_name}/{role} has invalid execution modes")
     if tomllib is not None:
         for agent in (PLUGIN_ROOT / "templates" / "agents").glob("*.toml"):
             value = tomllib.loads(agent.read_text(encoding="utf-8"))
@@ -94,8 +113,10 @@ def main() -> int:
         plan = router_core.make_route_plan("Run 500 parameter sweep tests", root=root)
         if plan.role != "router_experiment_runner":
             raise ValueError("routing smoke test failed")
-        if plan.plan_version != 2 or not plan.stages:
-            raise ValueError("Route Plan v2 smoke test failed")
+        if plan.plan_version != 3 or plan.profile_version != 4 or not plan.stages:
+            raise ValueError("Route Plan v3/Profile v4 smoke test failed")
+        if plan.execution_target != "subagent" or not plan.dispatch_ready:
+            raise ValueError("Thin Root dispatch smoke test failed")
     print("Adaptive Router validation passed")
     return 0
 

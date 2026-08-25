@@ -85,7 +85,7 @@ class RouterMcpTests(unittest.TestCase):
         initialized = router_mcp.handle(
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
         )
-        self.assertEqual(manifest["version"], "1.2.0")
+        self.assertEqual(manifest["version"], "1.3.0")
         self.assertEqual(
             initialized["result"]["serverInfo"]["version"], manifest["version"]
         )
@@ -354,10 +354,10 @@ class RouterMcpTests(unittest.TestCase):
         self.assertEqual(
             replies[0]["result"]["serverInfo"]["name"], "codex-adaptive-router"
         )
-        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "1.2.0")
+        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "1.3.0")
         payload = replies[1]["result"]["structuredContent"]
-        self.assertEqual(payload["role"], "router_code_mapper")
-        self.assertEqual(payload["model"], "gpt-5.6-luna")
+        self.assertEqual(payload["role"], "direct")
+        self.assertEqual(payload["model"], "gpt-5.6-sol")
 
     def test_replacement_model_schema_uses_runtime_sol_slug(self) -> None:
         messages = "\n".join(
@@ -486,7 +486,7 @@ class RouterMcpTests(unittest.TestCase):
         task_state = schema["properties"]["task_state"]
         self.assertEqual(task_state["enum"], ["unknown", "frozen"])
         self.assertIn("only", task_state["description"].casefold())
-        self.assertIn("Decision Features v2", route_plan["description"])
+        self.assertIn("Route Plan v3", route_plan["description"])
         self.assertIn("capability floor", route_plan["description"].casefold())
 
     def test_route_plan_accepts_only_known_task_ref(self) -> None:
@@ -522,8 +522,8 @@ class RouterMcpTests(unittest.TestCase):
             )
         reply = json.loads(result.stdout)
         context = reply["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("route=router_code_mapper", context)
-        self.assertIn("model=gpt-5.6-luna", context)
+        self.assertIn("route=direct", context)
+        self.assertIn("model=gpt-5.6-sol", context)
 
 
 if __name__ == "__main__":

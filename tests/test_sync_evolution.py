@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import jsonschema
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import router_core
@@ -15,20 +17,86 @@ import validate_evolution
 
 
 class SyncTests(unittest.TestCase):
-    def test_v2_v3_mixed_history_and_future_lf_preserve_legacy_crlf_bytes(self):
+    def test_public_v4_json_schema_matches_strict_runtime_contract(self):
+        schema = json.loads(
+            (ROOT / "evolution-data" / "schemas" / "event-v4.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        validator = jsonschema.Draft202012Validator(
+            schema, format_checker=jsonschema.FormatChecker()
+        )
+        with tempfile.TemporaryDirectory() as data:
+            root = Path(data)
+            router_core.RouterEngine(root).begin_task(
+                session_id="s", turn_id="t", prompt="Search code"
+            )
+            public = router_core.project_public_evidence_event(
+                router_core._all_events(root)[0]
+            )
+            validator.validate(public)
+            missing_contract = dict(public)
+            missing_contract.pop("handoff_contract")
+            with self.assertRaises(jsonschema.ValidationError):
+                validator.validate(missing_contract)
+            unbounded_nested = json.loads(json.dumps(public))
+            unbounded_nested["decision_features"]["raw_prompt"] = "forbidden"
+            with self.assertRaises(jsonschema.ValidationError):
+                validator.validate(unbounded_nested)
+            for forbidden in (
+                {"archive_status": "archived"},
+                {"event": "PostToolUse"},
+                {"quality_gate": "passed"},
+            ):
+                invalid_route = {**public, **forbidden}
+                with self.assertRaises(ValueError):
+                    router_core.validate_evidence_event(invalid_route)
+                with self.assertRaises(jsonschema.ValidationError):
+                    validator.validate(invalid_route)
+
+            engine = router_core.RouterEngine(root)
+            engine.observe_event(
+                "PostToolUse",
+                {
+                    "session_id": "s",
+                    "turn_id": "t",
+                    "tool_use_id": "tool-1",
+                    "tool_name": "shell",
+                    "tool_input": {},
+                    "tool_response": {},
+                },
+            )
+            execution = next(
+                router_core.project_public_evidence_event(event)
+                for event in router_core._all_events(root)
+                if event.get("type") == "execution"
+            )
+            validator.validate(execution)
+            invalid_execution = {**execution, "archive_status": "archived"}
+            with self.assertRaises(ValueError):
+                router_core.validate_evidence_event(invalid_execution)
+            with self.assertRaises(jsonschema.ValidationError):
+                validator.validate(invalid_execution)
+
+    def test_v2_v3_v4_mixed_history_and_future_lf_preserve_legacy_crlf_bytes(self):
         with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as repo:
             root = Path(data)
             target = Path(repo)
             engine = router_core.RouterEngine(root)
             engine.begin_task(session_id="s", turn_id="t", prompt="Search code")
-            v3 = router_core._all_events(root)[0]
-            v2 = json.loads(json.dumps(v3))
-            v2["schema_version"] = 2
-            v2["event_id"] = "00000000-0000-4000-8000-000000000002"
-            v2["route_id"] = "00000000-0000-4000-8000-000000000003"
+            v4 = router_core._all_events(root)[0]
+            v2 = sync_evolution_data.migrate_event(
+                {"schema_version": 1, "type": "execution", "sequence": 2}
+            )
+            v3 = next(
+                event
+                for batch in (ROOT / "evolution-data" / "batches").glob("*.jsonl")
+                for event in sync_evolution_data.read_jsonl(batch)
+                if event.get("schema_version") == 3
+            )
             source = root / "events" / "routing.jsonl"
             source.write_text(
-                json.dumps(v2, sort_keys=True) + "\n" + json.dumps(v3, sort_keys=True) + "\n",
+                "".join(json.dumps(event, sort_keys=True) + "\n" for event in (v2, v3, v4)),
                 encoding="utf-8",
             )
             sync_evolution_data.write_export(root, root / "other", target)
@@ -128,6 +196,36 @@ class SyncTests(unittest.TestCase):
             path.write_text(json.dumps(event) + "\n")
             with self.assertRaises(sync_evolution_data.SyncError):
                 sync_evolution_data.merged_records(root)
+
+    def test_exact_local_tokens_are_banded_and_redacted_from_github_batch(self):
+        with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as repo:
+            root = Path(data)
+            engine = router_core.RouterEngine(root)
+            task = engine.begin_task(
+                session_id="s", turn_id="t", prompt="Rename x"
+            )
+            engine.finalize_task(
+                task["task_ref"],
+                status="verified",
+                quality_gate="passed",
+                verified=True,
+                objective_verification=True,
+                local_input_tokens=900,
+                local_output_tokens=100,
+                local_token_source="codex_usage",
+                local_token_complete=True,
+            )
+            target = Path(repo)
+            sync_evolution_data.write_export(root, root / "other", target)
+            public_events = [
+                event
+                for batch in (target / "evolution-data" / "batches").glob("*.jsonl")
+                for event in sync_evolution_data.read_jsonl(batch)
+            ]
+            public_outcome = next(event for event in public_events if event["type"] == "outcome")
+            self.assertEqual(public_outcome["token_band"], "low")
+            self.assertNotIn("local_tokens", public_outcome)
+            self.assertNotIn("token_estimate", json.dumps(public_events))
 
     def test_new_evidence_appends_metrics_revision_without_policy_change(self):
         with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as repo:

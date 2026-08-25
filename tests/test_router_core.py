@@ -69,7 +69,7 @@ class RouterPlanTests(unittest.TestCase):
             ("audit", "router_adversarial_auditor", "xhigh"),
         )
 
-    def test_profile_v3_separates_authority_capability_and_effort(self):
+    def test_profile_v4_separates_authority_capability_effort_and_access(self):
         model_order = {
             "gpt-5.6-luna": 1,
             "gpt-5.6-terra": 2,
@@ -83,7 +83,7 @@ class RouterPlanTests(unittest.TestCase):
         }
         for name in ("generic", "quant"):
             profile = router_core.load_profile(name)
-            self.assertEqual(profile["schema_version"], 3)
+            self.assertEqual(profile["schema_version"], 4)
             for config in profile["roles"].values():
                 floor = config["capability_floor"]
                 self.assertEqual(floor, authority_floor[config["authority"]])
@@ -102,7 +102,7 @@ class RouterPlanTests(unittest.TestCase):
     def test_structured_routes(self):
         self.assertEqual(
             router_core.make_route_plan("Search code for references").role,
-            "router_code_mapper",
+            "direct",
         )
         self.assertEqual(
             router_core.make_route_plan("Run tests and collect metrics").model,
@@ -218,7 +218,7 @@ class RouterPlanTests(unittest.TestCase):
             )
         )
 
-    def test_route_plan_v2_templates_and_effort_precedence(self):
+    def test_route_plan_v3_templates_and_effort_precedence(self):
         tiny = router_core.make_route_plan(
             "Rename x",
             decision_features={
@@ -227,7 +227,10 @@ class RouterPlanTests(unittest.TestCase):
                 "verification_depth": "basic",
             },
         )
-        self.assertEqual((tiny.plan_version, tiny.route_mode), (2, "single"))
+        self.assertEqual(
+            (tiny.plan_version, tiny.profile_version, tiny.route_mode),
+            (3, 4, "single"),
+        )
         self.assertEqual(len(tiny.stages), 1)
         self.assertEqual(
             (tiny.stages[0]["role"], tiny.stages[0]["model"], tiny.stages[0]["reasoning_effort"]),
@@ -237,6 +240,10 @@ class RouterPlanTests(unittest.TestCase):
         discovery = router_core.make_route_plan(
             "Search code for references",
             decision_features={"cognitive_type": "discovery"},
+            routing_context={
+                "estimated_direct_tokens": 5000,
+                "estimated_worker_tokens": 500,
+            },
         )
         self.assertEqual(discovery.route_mode, "staged")
         self.assertEqual(
@@ -342,6 +349,61 @@ class RouterPlanTests(unittest.TestCase):
             )
         self.assertEqual(terra.model, "gpt-5.6-sol")
 
+
+
+    def test_token_routing_direct_exception_but_quality_gate_wins(self):
+        direct = router_core.make_route_plan(
+            "Search code for references",
+            routing_context={
+                "estimated_direct_tokens": 500,
+                "estimated_worker_tokens": 1800,
+            },
+        )
+        self.assertEqual(direct.execution_target, "direct")
+        self.assertEqual(direct.token_estimate["selection_reason"], "direct_lower_total")
+        quality = router_core.make_route_plan(
+            "Design durable architecture for production",
+            routing_context={
+                "estimated_direct_tokens": 100,
+                "estimated_worker_tokens": 5000,
+            },
+        )
+        self.assertEqual(quality.execution_target, "subagent")
+        self.assertEqual(quality.model, "gpt-5.6-sol")
+        self.assertEqual(quality.token_estimate["selection_reason"], "quality_floor")
+
+    def test_worker_unavailable_blocks_without_root_fallback(self):
+        plan = router_core.make_route_plan(
+            "Implement from frozen spec",
+            task_state="frozen",
+            routing_context={"worker_available": False},
+        )
+        self.assertFalse(plan.dispatch_ready)
+        self.assertEqual(plan.dispatch_blocker, "worker_unavailable")
+        self.assertEqual(plan.execution_target, "subagent")
+        self.assertNotEqual(plan.role, "direct")
+        forced_root = router_core.make_route_plan(
+            "Design durable architecture",
+            constraints={"no_delegation": True},
+        )
+        self.assertFalse(forced_root.dispatch_ready)
+        self.assertEqual(
+            forced_root.dispatch_blocker, "quality_floor_requires_specialist"
+        )
+
+    def test_quant_attribution_is_sol_luna_terra_sol_with_optional_audit(self):
+        plan = router_core.make_route_plan(
+            "Research high uncertainty quant attribution and implement frozen protocol",
+            profile="quant",
+            task_state="frozen",
+            decision_features={"operation_mode": "change", "decision_impact": "high"},
+        )
+        roles = [stage["role"] for stage in plan.stages]
+        self.assertEqual(roles[0], "router_quant_researcher")
+        self.assertIn("router_code_mapper", roles)
+        self.assertIn("router_research_engineer", roles)
+        self.assertEqual(roles[-2], "router_quant_researcher")
+        self.assertEqual(roles[-1], "router_adversarial_auditor")
 
 
 class EngineTests(unittest.TestCase):
@@ -479,7 +541,7 @@ class EngineTests(unittest.TestCase):
                 decision_features={"cognitive_type": "architecture"},
             )
             self.assertEqual(route["route_id"], task["route_id"])
-            self.assertEqual(route["role"], "router_code_mapper")
+            self.assertEqual(route["role"], "direct")
 
     def test_task_ref_only_is_idempotent_and_unknown_ref_is_clear(self):
         with tempfile.TemporaryDirectory() as d:
@@ -831,7 +893,293 @@ class EngineTests(unittest.TestCase):
             )
 
 
+    def test_recursive_reroute_depth_limit_and_multiple_grandchildren(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            parent = engine.plan_route(
+                "Implement from frozen spec", task_state="frozen"
+            )
+            implement = next(x for x in parent["stages"] if x["stage"] == "implement")
+            parent_lease = engine.dispatch_stage(parent["task_ref"], implement["stage_id"])
+            child = engine.freeze_and_reroute(
+                parent["task_ref"], parent_lease["lease_id"], "Search code for references",
+                decision_features={
+                    "cognitive_type": "discovery", "scope": "multi_file"
+                },
+            )
+            collect = next(x for x in child["stages"] if x["stage"] == "collect")
+            first = engine.dispatch_stage(
+                child["task_ref"], collect["stage_id"],
+                parent_lease_id=parent_lease["lease_id"],
+            )
+            self.assertEqual(first["delegation_depth"], 2)
+            engine.complete_stage(
+                child["task_ref"], first["lease_id"], success=True, quality_gate="passed"
+            )
+            second_child = engine.freeze_and_reroute(
+                parent["task_ref"], parent_lease["lease_id"], "Search code again",
+                decision_features={
+                    "cognitive_type": "discovery", "scope": "multi_file"
+                },
+            )
+            second_collect = next(x for x in second_child["stages"] if x["stage"] == "collect")
+            second = engine.dispatch_stage(
+                second_child["task_ref"], second_collect["stage_id"],
+                parent_lease_id=parent_lease["lease_id"],
+            )
+            blocked = engine.freeze_and_reroute(
+                second_child["task_ref"], second["lease_id"], "Implement deeper frozen spec"
+            )
+            self.assertFalse(blocked["dispatch_ready"])
+            self.assertEqual(blocked["dispatch_blocker"], "delegation_depth_exceeded")
+
+    def test_three_read_only_children_and_single_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            route = engine.plan_route(
+                "Audit production architecture",
+                routing_context={"independent_read_only_count": 3},
+            )
+            stage = next(
+                x for x in route["stages"]
+                if x["parallelism"] == "independent_read_only"
+            )
+            for index in range(3):
+                engine.dispatch_stage(
+                    route["task_ref"], stage["stage_id"],
+                    independent_read_only=True,
+                    independence_key=f"independent-{index}",
+                )
+            with self.assertRaisesRegex(ValueError, "read_only_concurrency_exceeded"):
+                engine.dispatch_stage(
+                    route["task_ref"], stage["stage_id"],
+                    independent_read_only=True,
+                    independence_key="independent-3",
+                )
+
+            first = engine.plan_route(
+                "Implement frozen spec", task_state="frozen", project_fingerprint="same"
+            )
+            second = engine.plan_route(
+                "Implement another frozen spec", task_state="frozen", project_fingerprint="same"
+            )
+            first_stage = next(x for x in first["stages"] if x["stage"] == "implement")
+            second_stage = next(x for x in second["stages"] if x["stage"] == "implement")
+            engine.dispatch_stage(first["task_ref"], first_stage["stage_id"])
+            with self.assertRaisesRegex(ValueError, "writer_lease_conflict"):
+                engine.dispatch_stage(second["task_ref"], second_stage["stage_id"])
+
+    def test_claim_requires_live_readiness_declared_independence_and_bound_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            parent = engine.plan_route(
+                "Implement frozen spec", task_state="frozen"
+            )
+            stage = next(x for x in parent["stages"] if x["stage"] == "implement")
+            with self.assertRaisesRegex(ValueError, "worker_unavailable"):
+                engine.dispatch_stage(
+                    parent["task_ref"], stage["stage_id"], worker_available=False
+                )
+            parent_lease = engine.dispatch_stage(
+                parent["task_ref"], stage["stage_id"]
+            )
+            other = engine.plan_route(
+                "Implement other frozen spec", task_state="frozen",
+                project_fingerprint="other-project",
+            )
+            other_stage = next(x for x in other["stages"] if x["stage"] == "implement")
+            other_lease = engine.dispatch_stage(other["task_ref"], other_stage["stage_id"])
+            child = engine.freeze_and_reroute(
+                parent["task_ref"], parent_lease["lease_id"],
+                "Search across multiple files",
+                decision_features={
+                    "cognitive_type": "discovery", "scope": "multi_file"
+                },
+            )
+            child_stage = next(x for x in child["stages"] if x["stage"] == "collect")
+            with self.assertRaisesRegex(ValueError, "parent_lease_inactive"):
+                engine.dispatch_stage(
+                    child["task_ref"], child_stage["stage_id"],
+                    parent_lease_id=other_lease["lease_id"],
+                )
+
+            serial = engine.plan_route("Audit production architecture")
+            serial_stage = next(
+                x for x in serial["stages"] if x["stage"] == "collect"
+            )
+            with self.assertRaisesRegex(ValueError, "independent_read_only_not_declared"):
+                engine.dispatch_stage(
+                    serial["task_ref"], serial_stage["stage_id"],
+                    independent_read_only=True, independence_key="not-planned",
+                )
+
+    def test_claim_intent_never_becomes_observed_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            route = engine.plan_route(
+                "Implement frozen spec", task_state="frozen"
+            )
+            stage = next(x for x in route["stages"] if x["stage"] == "implement")
+            lease = engine.dispatch_stage(route["task_ref"], stage["stage_id"])
+            outcome = engine.finalize_task(
+                route["task_ref"], status="verified", quality_gate="passed",
+                objective_verification=True, stage="implement",
+                lease_id=lease["lease_id"], boundary_status="passed",
+                scope_status="passed",
+            )
+            self.assertEqual(
+                outcome["observed_execution"],
+                {
+                    "role": "unknown", "model": "unknown",
+                    "reasoning_effort": "unknown", "execution_target": "unknown",
+                },
+            )
+            self.assertEqual(outcome["plan_match"], "unknown")
+
+    def test_visible_task_title_root_only_and_archive_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            route = engine.plan_route(
+                "Search code for references",
+                routing_context={"long_running": True},
+            )
+            self.assertRegex(route["visible_task_title"], router_core.VISIBLE_TASK_TITLE)
+            collect = next(x for x in route["stages"] if x["stage"] == "collect")
+            with self.assertRaisesRegex(ValueError, "visible_task_root_only"):
+                engine.dispatch_stage(
+                    route["task_ref"], collect["stage_id"], caller_is_root=False
+                )
+            lease = engine.dispatch_stage(
+                route["task_ref"], collect["stage_id"],
+                caller_is_root=True,
+                visible_task_title=route["visible_task_title"],
+            )
+            with self.assertRaisesRegex(ValueError, "not archive eligible"):
+                engine.transition_stage(
+                    route["task_ref"], lease["lease_id"], "archive_observed"
+                )
+            engine.complete_stage(
+                route["task_ref"], lease["lease_id"],
+                success=True, quality_gate="passed",
+                observed_role=collect["role"], observed_model=collect["model"],
+                observed_effort=collect["reasoning_effort"],
+                observed_execution_target="visible_task",
+                observed_source="caller_supplied",
+                boundary_status="passed", scope_status="passed",
+                verification_status="passed",
+            )
+            with self.assertRaisesRegex(ValueError, "matching observed lease state"):
+                engine.finalize_task(
+                    route["task_ref"], status="verified", quality_gate="passed",
+                    objective_verification=True, stage="collect",
+                    lease_id=lease["lease_id"], boundary_status="passed",
+                    scope_status="passed", archive_status="archived",
+                )
+            engine.finalize_task(
+                route["task_ref"], status="verified", quality_gate="passed",
+                objective_verification=True, stage="collect",
+                lease_id=lease["lease_id"], boundary_status="passed",
+                scope_status="passed",
+            )
+            archived = engine.transition_stage(
+                route["task_ref"], lease["lease_id"], "archive_observed"
+            )
+            self.assertEqual(archived["archive_status"], "archived")
+            self.assertTrue(any(
+                event.get("event") == "ArchiveObserved"
+                and event.get("archive_status") == "archived"
+                for event in router_core._all_events(Path(directory))
+            ))
+
+    def test_visible_task_explicit_max_title_is_dispatchable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            route = engine.plan_route(
+                "Audit production architecture",
+                constraints={"reasoning_effort": "max"},
+                routing_context={"long_running": True},
+            )
+            self.assertIn("-MAX]", route["visible_task_title"])
+            stage = next(
+                item for item in route["stages"]
+                if item["execution_target"] == "visible_task"
+            )
+            lease = engine.dispatch_stage(
+                route["task_ref"], stage["stage_id"], caller_is_root=True,
+                visible_task_title=route["visible_task_title"],
+            )
+            self.assertEqual(lease["execution_target"], "visible_task")
+
+    def test_visible_archive_rejects_any_failed_required_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            route = engine.plan_route(
+                "Implement frozen long-running spec", task_state="frozen",
+                routing_context={"long_running": True},
+            )
+            leases = {}
+            for name, gate in (("implement", "failed"), ("verify", "passed")):
+                stage = next(x for x in route["stages"] if x["stage"] == name)
+                lease = engine.dispatch_stage(
+                    route["task_ref"], stage["stage_id"], caller_is_root=True,
+                    visible_task_title=route["visible_task_title"],
+                )
+                engine.complete_stage(
+                    route["task_ref"], lease["lease_id"], success=True,
+                    quality_gate=gate, observed_role=stage["role"],
+                    observed_model=stage["model"],
+                    observed_effort=stage["reasoning_effort"],
+                    observed_execution_target="visible_task",
+                    observed_source="caller_supplied", boundary_status="passed",
+                    scope_status="passed", verification_status="passed",
+                )
+                leases[name] = lease
+            engine.finalize_task(
+                route["task_ref"], status="verified", quality_gate="passed",
+                objective_verification=True, stage="verify",
+                lease_id=leases["verify"]["lease_id"],
+                boundary_status="passed", scope_status="passed",
+            )
+            with self.assertRaisesRegex(ValueError, "not archive eligible"):
+                engine.transition_stage(
+                    route["task_ref"], leases["verify"]["lease_id"],
+                    "archive_observed",
+                )
+
+
 class IntelligenceTests(unittest.TestCase):
+    def test_stage_level_failure_axis_and_exact_token_band_are_authoritative(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            route = engine.plan_route(
+                "Implement frozen spec", task_state="frozen"
+            )
+            outcome = engine.finalize_task(
+                route["task_ref"], status="escalated", quality_gate="passed",
+                objective_verification=True, stage="verify",
+                replacement_role="router_experiment_runner",
+                replacement_model="gpt-5.6-luna",
+                replacement_effort="high",
+                model_fit="adequate", effort_fit="under",
+                boundary_status="passed", scope_status="passed",
+                local_input_tokens=90000, local_output_tokens=10000,
+                local_token_source="caller_supplied",
+                local_token_complete=True, token_band="low",
+            )
+            self.assertEqual(outcome["failure_axis"], "reasoning_budget")
+            self.assertEqual(outcome["token_band"], "very_high")
+
+    def test_objective_verification_does_not_infer_boundary_or_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = router_core.RouterEngine(Path(directory))
+            route = engine.plan_route("Rename x")
+            outcome = engine.finalize_task(
+                route["task_ref"], status="verified", quality_gate="passed",
+                objective_verification=True,
+            )
+            self.assertEqual(outcome["boundary_status"], "unknown")
+            self.assertEqual(outcome["scope_status"], "unknown")
+
     def test_model_and_effort_fit_rates_use_axis_known_denominators(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -909,17 +1257,37 @@ class IntelligenceTests(unittest.TestCase):
             self.assertEqual(len(outcomes), 1)
             self.assertNotIn("metric", json.dumps(first).casefold())
 
+            with self.assertRaisesRegex(ValueError, "observed audit lease"):
+                engine.finalize_task(
+                    task["task_ref"], stage="audit", status="verified",
+                    quality_gate="passed", verified=True,
+                    objective_verification=True, confidence=0.95,
+                )
+            audit_lease = engine.dispatch_stage(
+                task["task_ref"], followup["stage_id"]
+            )
+            engine.complete_stage(
+                task["task_ref"], audit_lease["lease_id"], success=True,
+                quality_gate="passed", observed_role=followup["role"],
+                observed_model=followup["model"],
+                observed_effort=followup["reasoning_effort"],
+                observed_execution_target=followup["execution_target"],
+                observed_source="caller_supplied", boundary_status="passed",
+                scope_status="passed", verification_status="passed",
+            )
             audit_outcome = engine.finalize_task(
-                task["task_ref"],
-                stage="audit",
-                status="verified",
-                quality_gate="passed",
-                verified=True,
-                objective_verification=True,
-                confidence=0.95,
+                task["task_ref"], stage="audit", status="verified",
+                quality_gate="passed", verified=True,
+                objective_verification=True, confidence=0.95,
+                lease_id=audit_lease["lease_id"], boundary_status="passed",
+                scope_status="passed",
             )
             self.assertEqual(audit_outcome["stage"], "audit")
             self.assertEqual(audit_outcome["stage_source"], "caller_supplied")
+            self.assertEqual(audit_outcome["plan_match"], "matched")
+            self.assertEqual(
+                audit_outcome["stage_lease"]["lease_id"], audit_lease["lease_id"]
+            )
             self.assertNotIn("audit_followup", audit_outcome)
 
     def test_stage_validation_inference_and_verified_adjacent_handoffs(self):
@@ -984,38 +1352,182 @@ class IntelligenceTests(unittest.TestCase):
                 },
             )
 
+    def _record_observed_replacement(
+        self,
+        root: Path,
+        plan: router_core.RoutePlan,
+        *,
+        index: int,
+        replacement_model: str,
+        replacement_effort: str,
+        model_fit: str,
+        effort_fit: str,
+        status: str = "escalated",
+        quality_gate: str = "passed",
+        project: str = "p",
+        high_risk_regression: bool = False,
+    ) -> dict:
+        route = router_core.create_route_record(
+            plan,
+            "learning evidence",
+            session_id=f"s{index % 3}",
+            project_fingerprint=project,
+            root=root,
+        )
+        primary = [
+            stage
+            for stage in plan.stages
+            if all(
+                getattr(plan, key) == stage[key]
+                for key in (
+                    "role",
+                    "model",
+                    "reasoning_effort",
+                    "execution_target",
+                )
+            )
+        ]
+        self.assertEqual(len(primary), 1)
+        stage = primary[0]
+        self.assertNotEqual(stage["execution_target"], "direct")
+        engine = router_core.RouterEngine(root)
+        lease = engine.dispatch_stage(route["task_ref"], stage["stage"])
+        engine.complete_stage(
+            route["task_ref"],
+            lease["lease_id"],
+            success=True,
+            quality_gate=quality_gate,
+            observed_role=stage["role"],
+            observed_model=stage["model"],
+            observed_effort=stage["reasoning_effort"],
+            observed_execution_target=stage["execution_target"],
+            observed_source="caller_supplied",
+            boundary_status="passed",
+            scope_status="passed",
+            verification_status="passed" if quality_gate == "passed" else "failed",
+        )
+        return router_core.record_outcome(
+            plan.route_id,
+            status,
+            confidence=0.9,
+            verified=quality_gate == "passed",
+            quality_gate=quality_gate,
+            objective_verification=True,
+            user_confirmed=True,
+            model_fit=model_fit,
+            effort_fit=effort_fit,
+            context_fit="adequate",
+            tool_data_fit="adequate",
+            replacement_role=stage["role"],
+            replacement_model=replacement_model,
+            replacement_effort=replacement_effort,
+            stage=stage["stage"],
+            lease_id=lease["lease_id"],
+            boundary_status="passed",
+            scope_status="passed",
+            high_risk_regression=high_risk_regression,
+            root=root,
+        )
+
+    def _complete_primary_stage(
+        self,
+        engine: router_core.RouterEngine,
+        task: dict,
+        *,
+        quality_gate: str = "passed",
+    ) -> tuple[dict, dict]:
+        route = task["route"]
+        primary = [
+            stage
+            for stage in route["stages"]
+            if all(
+                stage[key] == route[key]
+                for key in (
+                    "role",
+                    "model",
+                    "reasoning_effort",
+                    "execution_target",
+                )
+            )
+        ]
+        self.assertEqual(len(primary), 1)
+        stage = primary[0]
+        lease = engine.dispatch_stage(task["task_ref"], stage["stage"])
+        engine.complete_stage(
+            task["task_ref"],
+            lease["lease_id"],
+            success=True,
+            quality_gate=quality_gate,
+            observed_role=stage["role"],
+            observed_model=stage["model"],
+            observed_effort=stage["reasoning_effort"],
+            observed_execution_target=stage["execution_target"],
+            observed_source="caller_supplied",
+            boundary_status="passed",
+            scope_status="passed",
+            verification_status="passed" if quality_gate == "passed" else "failed",
+        )
+        return stage, lease
+
     def test_model_proposals_hold_role_and_effort_fixed_and_confounded_is_inconclusive(self):
         with tempfile.TemporaryDirectory() as model_dir, tempfile.TemporaryDirectory() as mixed_dir:
             model_root = Path(model_dir)
             mixed_root = Path(mixed_dir)
             for index in range(5):
                 for root, mixed in ((model_root, False), (mixed_root, True)):
-                    plan = router_core.make_route_plan("Search code", root=root)
-                    router_core.create_route_record(
-                        plan,
-                        "task",
-                        session_id=f"s{index % 3}",
-                        project_fingerprint="p",
+                    plan = router_core.make_route_plan(
+                        "Search code",
+                        routing_context={
+                            "estimated_direct_tokens": 5000,
+                            "estimated_worker_tokens": 500,
+                        },
                         root=root,
                     )
-                    router_core.record_outcome(
-                        plan.route_id,
-                        "escalated",
-                        confidence=0.9,
-                        verified=True,
-                        quality_gate="passed",
-                        objective_verification=True,
-                        user_confirmed=True,
+                    self._record_observed_replacement(
+                        root,
+                        plan,
+                        index=index,
+                        replacement_model="gpt-5.6-terra",
+                        replacement_effort=(
+                            "high" if mixed else plan.reasoning_effort
+                        ),
                         model_fit="under",
                         effort_fit="under" if mixed else "adequate",
-                        replacement_role=plan.role,
-                        replacement_model="gpt-5.6-terra",
-                        replacement_effort="high" if mixed else plan.reasoning_effort,
-                        root=root,
                     )
             proposals = router_core.learning_proposals(model_root)
             self.assertEqual({proposal["axis"] for proposal in proposals}, {"model"})
             self.assertEqual(router_core.learning_proposals(mixed_root), [])
+
+    def test_model_learning_never_merges_different_observed_efforts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index, effort in enumerate(["low", "low", "low", "high", "high"]):
+                plan = router_core.make_route_plan(
+                    "Search code",
+                    constraints={"reasoning_effort": effort},
+                    routing_context={
+                        "estimated_direct_tokens": 5000,
+                        "estimated_worker_tokens": 500,
+                    },
+                    root=root,
+                )
+                self._record_observed_replacement(
+                    root,
+                    plan,
+                    index=index,
+                    replacement_model="gpt-5.6-terra",
+                    replacement_effort=plan.reasoning_effort,
+                    model_fit="under",
+                    effort_fit="adequate",
+                )
+            proposals = router_core.learning_proposals(root)
+            self.assertEqual(len(proposals), 2)
+            self.assertEqual(
+                sorted(item["replacement_outcomes"] for item in proposals), [2, 3]
+            )
+            self.assertTrue(
+                all(item["status"] == "collecting_evidence" for item in proposals)
+            )
 
     def test_outcome_v3_derives_single_axis_and_confounded_failure_axes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1038,7 +1550,7 @@ class IntelligenceTests(unittest.TestCase):
                 replacement_effort="xhigh",
                 root=root,
             )
-            self.assertEqual(effort["schema_version"], 3)
+            self.assertEqual(effort["schema_version"], 4)
             self.assertEqual(effort["failure_axis"], "reasoning_budget")
             self.assertEqual(effort["route_fit"], "under_routed")
 
@@ -1107,7 +1619,7 @@ class IntelligenceTests(unittest.TestCase):
                 context_fit="adequate",
                 tool_data_fit="adequate",
             )
-            self.assertTrue(all(event["schema_version"] == 3 for event in router_core._all_events(root)))
+            self.assertTrue(all(event["schema_version"] == 4 for event in router_core._all_events(root)))
             legacy = json.loads(json.dumps(outcome))
             legacy["schema_version"] = 2
             for field in (
@@ -1135,28 +1647,14 @@ class IntelligenceTests(unittest.TestCase):
             plan = router_core.make_route_plan(
                 "Implement from frozen spec", task_state="frozen", root=root
             )
-            router_core.create_route_record(
+            self._record_observed_replacement(
+                root,
                 plan,
-                "Implement from frozen spec",
-                session_id=f"s{i%3}",
-                project_fingerprint="p",
-                root=root,
-            )
-            router_core.record_outcome(
-                plan.route_id,
-                "escalated",
-                confidence=0.9,
-                verified=True,
-                quality_gate="passed",
-                route_fit="under_routed",
-                objective_verification=True,
-                user_confirmed=True,
-                model_fit="adequate",
-                effort_fit="under",
-                replacement_role=plan.role,
+                index=i,
                 replacement_model=plan.model,
                 replacement_effort="xhigh",
-                root=root,
+                model_fit="adequate",
+                effort_fit="under",
             )
 
     def test_objective_gate_axis_proposals_metrics_and_confirmation(self):
@@ -1172,6 +1670,37 @@ class IntelligenceTests(unittest.TestCase):
             proposal = proposals[0]
             router_core.start_shadow(proposal["proposal_id"], root)
             engine = router_core.RouterEngine(root)
+            weak = engine.begin_task(
+                session_id="shadow-weak",
+                turn_id="1",
+                prompt="Implement from frozen spec",
+                project="p",
+                decision_features={
+                    "cognitive_type": "implementation",
+                    "spec_state": "frozen",
+                    "confidence": 0.9,
+                },
+            )
+            self.assertEqual(
+                weak["route"]["shadow"]["proposal_id"], proposal["proposal_id"]
+            )
+            engine.finalize_task(
+                weak["task_ref"],
+                status="escalated",
+                quality_gate="passed",
+                route_fit="under_routed",
+                confidence=0.9,
+                verified=True,
+                objective_verification=True,
+                user_confirmed=True,
+                replacement_role=weak["route"]["role"],
+                replacement_model=weak["route"]["model"],
+                replacement_effort="xhigh",
+            )
+            weak_observation = router_core.load_shadows(root)["items"][
+                proposal["proposal_id"]
+            ]["observations"][-1]
+            self.assertEqual(weak_observation["result"], "inconclusive")
             for i in range(10):
                 task = engine.begin_task(
                     session_id=f"shadow-{i}",
@@ -1184,6 +1713,7 @@ class IntelligenceTests(unittest.TestCase):
                         "confidence": 0.9,
                     },
                 )
+                stage, lease = self._complete_primary_stage(engine, task)
                 engine.finalize_task(
                     task["task_ref"],
                     status="escalated",
@@ -1198,6 +1728,12 @@ class IntelligenceTests(unittest.TestCase):
                     replacement_role=task["route"]["role"],
                     replacement_model=task["route"]["model"],
                     replacement_effort="xhigh",
+                    stage=stage["stage"],
+                    lease_id=lease["lease_id"],
+                    context_fit="adequate",
+                    tool_data_fit="adequate",
+                    boundary_status="passed",
+                    scope_status="passed",
                 )
             with self.assertRaises(ValueError):
                 router_core.confirm_policy_change(proposal["proposal_id"], False, root)
@@ -1205,6 +1741,18 @@ class IntelligenceTests(unittest.TestCase):
                 proposal["proposal_id"], True, root
             )
             self.assertEqual(override["axis"], "reasoning_effort")
+            matching = router_core.make_route_plan(
+                "Implement from frozen spec", task_state="frozen", root=root
+            )
+            self.assertEqual(matching.reasoning_effort, "xhigh")
+            mismatched = router_core.make_route_plan(
+                "Implement this long-running cross-project migration from a frozen spec",
+                task_state="frozen",
+                routing_context={"long_running": True, "caller_is_root": True},
+                root=root,
+            )
+            self.assertEqual(mismatched.execution_target, "visible_task")
+            self.assertEqual(mismatched.reasoning_effort, "high")
 
     def test_legacy_manual_shadow_observations_never_make_proposal_ready(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1254,25 +1802,16 @@ class IntelligenceTests(unittest.TestCase):
                 plan = router_core.make_route_plan(
                     "Implement from frozen spec", task_state="frozen", root=root
                 )
-                router_core.create_route_record(
-                    plan, "task", session_id=f"s{i%3}", root=root
-                )
-                router_core.record_outcome(
-                    plan.route_id,
-                    "escalated",
-                    confidence=0.9,
-                    verified=True,
-                    quality_gate="failed",
-                    route_fit="under_routed",
-                    objective_verification=True,
-                    user_confirmed=True,
-                    high_risk_regression=i == 0,
-                    model_fit="adequate",
-                    effort_fit="under",
-                    replacement_role=plan.role,
+                self._record_observed_replacement(
+                    root,
+                    plan,
+                    index=i,
                     replacement_model=plan.model,
                     replacement_effort="xhigh",
-                    root=root,
+                    model_fit="adequate",
+                    effort_fit="under",
+                    quality_gate="failed",
+                    high_risk_regression=i == 0,
                 )
             self.assertTrue(
                 all(
@@ -1306,26 +1845,16 @@ class IntelligenceTests(unittest.TestCase):
                 plan = router_core.make_route_plan(
                     "Implement from frozen spec", task_state="frozen", root=root
                 )
-                router_core.create_route_record(
+                self._record_observed_replacement(
+                    root,
                     plan,
-                    "Implement from frozen spec",
-                    session_id=f"s{i%3}",
-                    project_fingerprint=f"p{i%2}",
-                    root=root,
-                )
-                router_core.record_outcome(
-                    plan.route_id,
-                    "overridden",
-                    confidence=0.9,
-                    verified=True,
-                    quality_gate="passed",
-                    route_fit="over_routed",
-                    objective_verification=True,
-                    user_confirmed=True,
-                    replacement_role=plan.role,
+                    index=i,
+                    status="overridden",
+                    project=f"p{i % 2}",
                     replacement_model=plan.model,
                     replacement_effort="medium",
-                    root=root,
+                    model_fit="adequate",
+                    effort_fit="over",
                 )
             proposal = next(
                 x
@@ -1353,6 +1882,95 @@ class IntelligenceTests(unittest.TestCase):
             )
             item = router_core.load_shadows(root)["items"][proposal["proposal_id"]]
             self.assertEqual(item["observations"][-1]["result"], "inconclusive")
+
+    def test_v4_planned_observed_exact_local_tokens_and_public_projection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = router_core.make_route_plan("Search code for references", root=root)
+            router_core.create_route_record(plan, "task", root=root)
+            outcome = router_core.record_outcome(
+                plan.route_id,
+                "verified",
+                confidence=0.95,
+                verified=True,
+                objective_verification=True,
+                observed_role=plan.role,
+                observed_model="gpt-5.6-terra",
+                observed_effort=plan.reasoning_effort,
+                observed_execution_target=plan.execution_target,
+                local_input_tokens=1234,
+                local_output_tokens=321,
+                local_token_source="codex_usage",
+                local_token_complete=True,
+                root=root,
+            )
+            self.assertEqual(outcome["local_tokens"]["total"], 1555)
+            self.assertEqual(outcome["plan_match"], "deviated")
+            metrics = router_core.router_metrics(root)
+            self.assertIn(
+                f"{plan.task_class}|gpt-5.6-terra|{plan.reasoning_effort}",
+                metrics["task_class_model_effort_success"],
+            )
+            self.assertNotIn(
+                f"{plan.task_class}|{plan.model}|{plan.reasoning_effort}",
+                metrics["task_class_model_effort_success"],
+            )
+            public = router_core.project_public_evidence_event(outcome)
+            self.assertNotIn("local_tokens", public)
+            router_core.validate_public_evidence_event(public)
+            incomplete = router_core.make_route_plan("Search another path", root=root)
+            router_core.create_route_record(incomplete, "task-2", root=root)
+            with self.assertRaisesRegex(ValueError, "complete and source-attributed"):
+                router_core.record_outcome(
+                    incomplete.route_id,
+                    "verified",
+                    confidence=0.95,
+                    local_input_tokens=10,
+                    local_output_tokens=5,
+                    local_token_source="caller_supplied",
+                    local_token_complete=False,
+                    root=root,
+                )
+
+    def test_outcome_stage_must_match_completed_lease(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = router_core.RouterEngine(root)
+            task = engine.begin_task(
+                session_id="s",
+                turn_id="t",
+                prompt="Implement the frozen change",
+                decision_features={
+                    "cognitive_type": "implementation",
+                    "spec_state": "frozen",
+                },
+            )
+            implement = next(
+                stage
+                for stage in task["route"]["stages"]
+                if stage["stage"] == "implement"
+            )
+            lease = engine.dispatch_stage(task["task_ref"], "implement")
+            engine.complete_stage(
+                task["task_ref"],
+                lease["lease_id"],
+                success=True,
+                quality_gate="passed",
+                observed_role=implement["role"],
+                observed_model=implement["model"],
+                observed_effort=implement["reasoning_effort"],
+                observed_execution_target=implement["execution_target"],
+                observed_source="caller_supplied",
+                boundary_status="passed",
+                scope_status="passed",
+                verification_status="passed",
+            )
+            with self.assertRaisesRegex(ValueError, "lease does not match"):
+                engine.finalize_task(
+                    task["task_ref"],
+                    stage="verify",
+                    lease_id=lease["lease_id"],
+                )
 
 
 if __name__ == "__main__":

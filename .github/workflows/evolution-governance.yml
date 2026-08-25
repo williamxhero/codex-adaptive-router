@@ -8,6 +8,30 @@ jobs:
         with: {fetch-depth: 0}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: python scripts/validate_evolution.py --base-ref "${{ github.event.pull_request.base.sha || github.event.before }}"
+      - run: python -m pip install jsonschema ruff
+      - name: Resolve validation base
+        shell: bash
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          zeros=0000000000000000000000000000000000000000
+          if [ -n "$PR_BASE" ] && git cat-file -e "$PR_BASE^{commit}" 2>/dev/null; then
+            base=$PR_BASE
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "$zeros" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            base=$BEFORE
+          elif git rev-parse --verify origin/main >/dev/null 2>&1; then
+            base=$(git merge-base HEAD origin/main)
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            base=HEAD^
+          else
+            base=HEAD
+          fi
+          echo "BASE_REF=$base" >> "$GITHUB_ENV"
+      - run: python scripts/validate_evolution.py --base-ref "$BASE_REF"
       - run: python -m unittest discover -s tests -v
+      - run: python -m ruff check .
       - run: python scripts/validate_router.py
+      - run: python scripts/validate_agent_packages.py
+      - run: python scripts/smoke_lifecycle.py
+      - run: git diff --check "$BASE_REF"

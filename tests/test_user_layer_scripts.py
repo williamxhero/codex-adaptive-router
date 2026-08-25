@@ -30,7 +30,7 @@ class UserLayerScriptsTests(unittest.TestCase):
             self.assertIn('model = "gpt-5.6-sol"', config)
             self.assertIn('model_reasoning_effort = "medium"', config)
             self.assertIn("[agents]", config)
-            self.assertEqual(len(list(agents.glob("router_*.toml"))), 7)
+            self.assertEqual(len(list(agents.glob("router_*.toml"))), 8)
             self.assertTrue((agents / "other_agent.toml").exists())
 
             subprocess.run(
