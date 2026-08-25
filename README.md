@@ -1,6 +1,6 @@
 # Codex Adaptive Router
 
-`codex-adaptive-router` 1.1.1 adds privacy-bounded Outcome Intelligence and a task-ref/store consistency hotfix: each user turn becomes a correlated task, execution evidence is aggregated, outcomes produce metrics and axis-specific proposals, shadow evaluation remains non-enforcing, and only explicit human confirmation revises policy.
+`codex-adaptive-router` 1.2.0 adds Capability–Budget Separation. Model capability (`Luna < Terra < Sol`) is independent from reasoning effort, every authority has a hard capability floor, and Route Plan v2 stages bounded specialist work while the Sol primary thread retains final intent, integration, and conclusions.
 
 It is designed for all projects, with a generic profile by default and a stricter `quant` profile for quantitative research and backtesting.
 
@@ -18,6 +18,10 @@ It is designed for all projects, with a generic profile by default and a stricte
 | Valuable open exploration or local optimum escape | `router_strategy_scout` — Sol XHigh |
 
 Luna and Terra generate bounded evidence or implementation. They never own unresolved research, architecture, statistical, market-semantic, or irreversible decisions.
+
+Reasoning effort never compensates for a model below its floor. Evidence requires at least Luna, implementation requires at least Terra, and decision or audit authority requires Sol. Max and Ultra are never automatic; they require an explicit user constraint or a human-confirmed policy override.
+
+Route Plan v2 uses deterministic templates: tiny direct work stays Root Sol Medium; discovery collects with Luna then synthesizes with Sol; implementation frames with Sol, implements with Terra, verifies with Luna, and synthesizes with Sol; research frames and synthesizes with Sol around bounded collection and optional frozen implementation. High-impact or exceptional results append a Sol XHigh audit.
 
 ## Important capability boundary
 
@@ -62,6 +66,12 @@ The hooks fail open: a routing-storage or classification issue never blocks ordi
 ### v1.1.1 task-ref/store consistency hotfix
 
 Hooks and the MCP server now write to one canonical runtime root: `CODEX_ADAPTIVE_ROUTER_DATA` when explicitly set, otherwise `CODEX_HOME/codex-adaptive-router` (or `~/.codex/codex-adaptive-router`). `PLUGIN_DATA` is legacy-read-only and is never the primary write root. When an MCP-only `task_ref` exists in an older `CODEX_HOME/plugins/data/codex-adaptive-router-*` store, the Router imports only that task's validated, privacy-bounded v2 events into the canonical store, preserving its route ID and deduplicating by event ID and dedupe key. Conflicting legacy route IDs fail closed.
+
+### v1.2.0 Capability–Budget Separation
+
+Profiles use schema v3 with explicit authority, capability floor, legal models, independent effort bands, and Sol escalation conditions. Decision Features v2 accepts any documented subset and deterministically fills the remainder. Outcome Intelligence v3 separates model, effort, context, tool-data, and execution failure axes; multi-axis replacements are confounded rather than misattributed.
+
+See [Capability–Budget ADR](docs/adr/0001-capability-budget-separation.md) and [Outcome Intelligence](docs/outcome-intelligence.md).
 
 ## Learning safeguards
 
@@ -124,7 +134,7 @@ python -m unittest discover -s tests -v
 
 ## Current limitations
 
-- Decision Features v1 performs deterministic structured risk/cognitive classification; keywords are only a fallback.
+- Decision Features v2 performs deterministic structured risk/cognitive classification; keywords are only a fallback and callers may provide any known subset.
 - Cost/quality outcomes are intentionally evidence-driven; token usage is not assumed to be available from every Codex Hook surface.
 - The Router does not automatically use Max or Ultra.
 - An active thread's primary model remains unchanged; use a future launcher for true pre-thread model selection.

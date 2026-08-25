@@ -74,6 +74,7 @@ class RouterPlanTests(unittest.TestCase):
             constraints={"model": "gpt-5.6-sol", "reasoning_effort": "max"},
         )
         self.assertEqual(plan.reasoning_effort, "max")
+        self.assertEqual(plan.stages[0]["reasoning_effort"], "max")
         automatic = router_core.make_route_plan(
             "small answer",
             decision_features={"cognitive_type": "direct", "confidence": 0.9},
@@ -249,6 +250,32 @@ class RouterPlanTests(unittest.TestCase):
                     for stage in plan.stages
                 )
             )
+
+    def test_luna_high_and_terra_xhigh_never_receive_decision_authority(self):
+        luna = router_core.make_route_plan(
+            "Research the architecture",
+            decision_features={"cognitive_type": "architecture"},
+            constraints={
+                "role": "router_code_mapper",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "high",
+            },
+        )
+        terra = router_core.make_route_plan(
+            "Research the architecture",
+            decision_features={"cognitive_type": "research"},
+            constraints={"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"},
+        )
+        for plan in (luna, terra):
+            self.assertTrue(
+                all(
+                    stage["model"] == "gpt-5.6-sol"
+                    for stage in plan.stages
+                    if stage["authority"] in {"decision", "audit"}
+                )
+            )
+        self.assertEqual(terra.model, "gpt-5.6-sol")
+
 
 
 class EngineTests(unittest.TestCase):
@@ -449,6 +476,39 @@ class EngineTests(unittest.TestCase):
 
 
 class IntelligenceTests(unittest.TestCase):
+    def test_model_proposals_hold_role_and_effort_fixed_and_confounded_is_inconclusive(self):
+        with tempfile.TemporaryDirectory() as model_dir, tempfile.TemporaryDirectory() as mixed_dir:
+            model_root = Path(model_dir)
+            mixed_root = Path(mixed_dir)
+            for index in range(5):
+                for root, mixed in ((model_root, False), (mixed_root, True)):
+                    plan = router_core.make_route_plan("Search code", root=root)
+                    router_core.create_route_record(
+                        plan,
+                        "task",
+                        session_id=f"s{index % 3}",
+                        project_fingerprint="p",
+                        root=root,
+                    )
+                    router_core.record_outcome(
+                        plan.route_id,
+                        "escalated",
+                        confidence=0.9,
+                        verified=True,
+                        quality_gate="passed",
+                        objective_verification=True,
+                        user_confirmed=True,
+                        model_fit="under",
+                        effort_fit="under" if mixed else "adequate",
+                        replacement_role=plan.role,
+                        replacement_model="gpt-5.6-terra",
+                        replacement_effort="high" if mixed else plan.reasoning_effort,
+                        root=root,
+                    )
+            proposals = router_core.learning_proposals(model_root)
+            self.assertEqual({proposal["axis"] for proposal in proposals}, {"model"})
+            self.assertEqual(router_core.learning_proposals(mixed_root), [])
+
     def test_outcome_v3_derives_single_axis_and_confounded_failure_axes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

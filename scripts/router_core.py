@@ -1209,7 +1209,7 @@ def _route_stages(
     needs_implementation: bool = False,
 ) -> list[dict[str, Any]]:
     if task_class == "direct":
-        stages = [_stage(loaded, "synthesize", "decision", "direct", "medium")]
+        stages = [_stage(loaded, "synthesize", "decision", "direct", effort)]
     elif task_class in {"discovery", "execution"}:
         worker = "router_code_mapper" if task_class == "discovery" else "router_experiment_runner"
         stages = [
@@ -2373,6 +2373,7 @@ def learning_proposals(root: Path | None = None) -> list[dict[str, Any]]:
             or not isinstance(replacement, dict)
             or not outcome.get("objective_verification")
             or not outcome.get("user_confirmed")
+            or outcome.get("status") not in {"escalated", "overridden"}
             or outcome.get("quality_gate") not in {"passed", "failed"}
             or float(outcome.get("confidence") or 0) < learning["minimum_confidence"]
         ):
@@ -2768,7 +2769,7 @@ def hook_context(
         return {
             "hookSpecificOutput": {
                 "hookEventName": event,
-                "additionalContext": "Codex Adaptive Router v1.1.1 is active; policy changes remain human-confirmed.",
+                "additionalContext": "Codex Adaptive Router v1.2.0 is active; capability floors are enforced and policy changes remain human-confirmed.",
             }
         }
     if event == "UserPromptSubmit":

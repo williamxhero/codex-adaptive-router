@@ -17,6 +17,18 @@ import router_mcp
 
 
 class RouterMcpTests(unittest.TestCase):
+    def test_release_versions_are_consistent(self) -> None:
+        manifest = json.loads(
+            (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        initialized = router_mcp.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        )
+        self.assertEqual(manifest["version"], "1.2.0")
+        self.assertEqual(
+            initialized["result"]["serverInfo"]["version"], manifest["version"]
+        )
+
     def test_hook_and_independent_mcp_share_task_ref_without_plugin_data(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             codex_home = Path(directory) / "codex-home"

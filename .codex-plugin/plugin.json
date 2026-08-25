@@ -1,19 +1,20 @@
 {
   "name": "codex-adaptive-router",
-  "version": "1.1.1",
-  "description": "Privacy-bounded Outcome Intelligence and adaptive routing for Codex.",
+  "version": "1.2.0",
+  "description": "Capability-safe staged routing and privacy-bounded Outcome Intelligence for Codex.",
   "author": {
     "name": "williamxhero"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex Adaptive Router",
-    "shortDescription": "Route work to the right Codex model and reasoning effort.",
-    "longDescription": "Routes Codex work by cognitive risk, records privacy-bounded routing evidence locally, and proposes policy improvements only after repeated evidence and shadow validation.",
+    "shortDescription": "Separate model capability from reasoning budget.",
+    "longDescription": "Builds capability-floor-safe staged plans, keeps final decisions Sol-owned, records privacy-bounded routing evidence locally, and proposes policy improvements only after repeated evidence and shadow validation.",
     "developerName": "williamxhero",
     "category": "Developer Tools",
     "capabilities": [
       "Adaptive subagent routing",
+      "Capability-floor-safe staged plans",
       "Local routing history",
       "Shadow policy evaluation",
       "Outcome Intelligence metrics",
