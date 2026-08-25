@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 - 2026-08-25
+
+- Add Thin Root token-aware selection after capability and quality gates.
+- Add Profile v4, Route Plan v3, and local/public Evidence v4 projection.
+- Add depth-two recursive dispatch, stage leases, three-way read-only concurrency, and single-writer ownership.
+- Add direct/subagent/visible-task targets with structured readiness blockers and Root-only visible-task lifecycle rules.
+- Add planned-versus-observed provenance, exact local token accounting with source completeness, and observed-route learning safeguards.
+- Add `router_quant_researcher` and Sol-to-Luna/Terra-to-Sol quantitative attribution routes with conditional Sol XHigh audit.
+- Preserve v1-v3 evidence, v1.1.1 task-ref/store behavior, Windows process safety, privacy gates, and LF hash-chain compatibility.
+
 ## 1.2.0 - 2026-08-25
 
 - Separate model capability from reasoning effort with hard authority floors.

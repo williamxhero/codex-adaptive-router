@@ -1,49 +1,47 @@
 ---
 name: adaptive-routing
-description: Select and execute the appropriate Codex model, reasoning effort, and specialist route for non-trivial work; preserve a Sol-owned decision boundary for ambiguous, architectural, research, and high-impact conclusions.
+description: Select and execute capability-safe, token-aware direct, subagent, or visible-task routes; preserve Thin Root ownership, depth-two recursive dispatch, and Sol-owned decisions.
 ---
 
-# Adaptive Routing
+# Adaptive Routing v1.3
 
-Use this Skill whenever a request is non-trivial, spans multiple files or tools, needs a specialist, contains a high-impact decision, or asks for research, diagnosis, architecture, backtesting, or a large batch operation. Do not invoke it for a tiny safe task the primary thread can complete more cheaply than delegating.
+Use this Skill for non-trivial work, multi-file changes, research, diagnosis, architecture, quantitative attribution, backtesting, or long-running/cross-project execution. Tiny safe tasks may remain direct.
 
-## Route Plan v2
+## Route Plan v3
 
-1. If the user explicitly specifies a model, reasoning effort, agent, or asks for no delegation, honor that request unless a higher-priority safety rule prevents it.
-2. `UserPromptSubmit` creates the task and initial route. Call `adaptive_router.route_plan` with its `task_ref` to confirm it idempotently; include structured `decision_features` and user `constraints` when known. Pass `task_state: "frozen"` only after semantics are settled.
-3. The plan cannot hot-switch the active primary thread's model or effort. `role: direct` means the current Root and is always Sol Medium. Any stage requiring Sol High/XHigh uses a named Sol specialist instead.
-4. Execute required stages in order: `frame`, `collect`, `implement`, `verify`, `synthesize`, then `audit` when present. Reuse an existing specialist when its role still matches the next stage.
-5. Spawn at most one active specialist by default. Parallelize only genuinely independent evidence stages whose isolation materially improves the result.
-6. Treat `capability_floor` as a hard model boundary. Reasoning effort never compensates for a model below that floor.
-7. If `capability_exception` is present, the requested below-floor model is restricted to the indicated worker use. It never receives decision or audit authority, and the Sol Root still synthesizes the result.
-8. The Root owns final intent, cross-agent integration, acceptance, and the response to the user. A researcher or architect may return a delegated decision result and an auditor may return an audit result, but the Root must explicitly integrate and accept or reject it.
+1. Honor explicit user constraints unless safety or a capability floor prevents them.
+2. Confirm a hook-created `task_ref` idempotently with `route_plan`; never reroute an existing reference.
+3. Freeze semantics before implementation. Capability and quality gates are evaluated before token cost.
+4. Execute the selected `execution_target`: `direct`, `subagent`, or `visible_task`. Complex work defaults to `subagent`; long-running, cross-project, or context-isolated work uses `visible_task`.
+5. If a required worker is unavailable, stop at the structured dispatch blocker. Root must not silently take over complex work.
+6. Max and Ultra are never automatic. They require an explicit user constraint or a human-confirmed policy override.
+
+## Dispatch and recursion
+
+- Claim every delegated stage with `claim_stage` before execution.
+- Root is depth 0, child is depth 1, grandchild is depth 2. Depth 2 may not delegate further.
+- One parent has one active specialist by default. Up to three genuinely independent read-only children may run concurrently only when the plan declares the slot count and each claim supplies a distinct independence key.
+- One logical repository has one writer lease across the dispatch tree.
+- A child may sequentially freeze and reroute remaining work more than once. The immutable Route Plan is never rewritten.
+- Only Root may create a visible task. Use `[AR][MODEL-EFFORT] short objective`; archive only after terminal success plus passed quality, boundary, scope, verification, and required-audit gates.
 
 ## Decision boundary
 
-- `router_code_mapper` / Luna Medium: code search, references, logs, call chains, and bounded evidence collection.
-- `router_experiment_runner` / Luna Medium: already-defined tests, scans, benchmarks, parameter sweeps, and metric collection.
-- `router_research_engineer` / Terra High: implementation after the specification is frozen.
-- `router_researcher` / Sol High: ambiguous diagnosis, causal explanation, research design, and statistical judgment.
-- `router_architect` / Sol High: durable architecture, domain semantics, timing, data availability, accounting, and compatibility decisions.
-- `router_adversarial_auditor` / Sol XHigh: unusually good results, planned acceptance/deployment, leakage/overfit risk, and high-impact review.
-- `router_strategy_scout` / Sol XHigh: genuinely open, high-value novel exploration or a demonstrated local optimum.
+- `router_code_mapper` / Luna Medium: read-only code and evidence mapping.
+- `router_experiment_runner` / Luna Medium: defined tests, scans, benchmarks, and metrics.
+- `router_research_engineer` / Terra High: frozen-spec implementation and the only default writer.
+- `router_researcher` / Sol High: diagnosis, research design, and causal judgment.
+- `router_quant_researcher` / Sol High: quantitative attribution and statistical conclusions.
+- `router_architect` / Sol High: durable architecture, time/accounting, and market semantics.
+- `router_adversarial_auditor` / Sol XHigh: high-impact or unusually strong result review.
+- `router_strategy_scout` / Sol XHigh: open-ended exploration or escape from a demonstrated local optimum.
 
-Luna and Terra may produce evidence and implementation, but Luna High is still evidence-only and Terra XHigh is still implementation-only. They must not independently resolve undefined semantics, research conclusions, statistical conclusions, market semantics, or irreversible architecture. Escalate those decisions to a Sol stage.
+Root retains intent, integration, acceptance, and the user-facing answer. Luna and Terra never resolve undefined semantics or own research/statistical/irreversible conclusions.
 
-Do not automatically use Max or Ultra. They are legal only when explicitly constrained by the user or selected by a human-confirmed policy override. If XHigh is insufficient, explain why and ask the user whether additional cost is justified.
+## Outcome Intelligence v4
 
-## Quant profile
+Record outcomes only when meaningful evidence exists. Include the lease and observed role/model/effort/target when known. `SubagentStop` is lifecycle evidence, never objective verification. Exact local token counts are accepted only from stable Codex/provider usage or an exact caller report; otherwise leave them unavailable.
 
-When the task concerns strategies, backtests, market regimes, factor exposures, trading semantics, or statistical validity, set `profile: "quant"`.
+Learning uses the observed execution of the unique primary stage, requires adequate context/tool data plus matched boundaries/scope/verification and a completed delegated lease, isolates model and effort axes while holding the other route covariates fixed, rejects confounded evidence, runs non-enforcing shadow evaluation under the same gates, and still requires explicit human confirmation. GitHub projection contains only token bands/aggregates, HMAC identities, and enums—never raw prompts, paths, code, tool I/O, titles, or transcripts.
 
-- Do not interpret the highest Sharpe or best sweep row as strategy validity.
-- Before accepting an important strategy result, consider out-of-sample behavior, regime dependence, parameter-neighborhood stability, costs, turnover, concentration, leakage, and multiple testing.
-- Route time semantics, fills, T+1, limits, halts, rolling contracts, margins, and accounting to `router_architect`.
-
-## Outcome evidence
-
-After meaningful routed work, call `adaptive_router.record_route_outcome` only when there is real evidence: verification passed, user correction, material failure, escalation, or a deliberate model override. Do not manufacture outcomes.
-
-When known, pass the completed `stage` and `objective_verification`. The stage must belong to the stored route plan. Agent/spawn and subagent lifecycle hooks automatically associate a unique matching required stage by role and, when available, model/effort; ambiguous or unmatched lifecycle stays unknown. If `stage` is omitted, the most recent uniquely associated completed lifecycle stage is preferred, then a sole required stage may be inferred. `SubagentStop` records lifecycle completion only and never proves objective verification. For an unusually strong result, pass `result_signal: exceptional_positive` without raw metrics or result text. If the stored route has no audit, the Router returns a required `router_adversarial_auditor` / Sol XHigh follow-up; execute and record that audit before accepting the result.
-
-For an escalation or override, provide the replacement role/model/effort. Proposal evidence also requires objective verification and explicit user confirmation. Role/model/effort proposals are independent axes; policy never changes automatically.
+For high-uncertainty quantitative attribution, use Sol High framing, Luna evidence or Terra frozen implementation, Sol High synthesis, and Sol XHigh audit when impact, conflict, or exceptional results require it.

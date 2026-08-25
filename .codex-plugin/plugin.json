@@ -1,29 +1,30 @@
 {
   "name": "codex-adaptive-router",
-  "version": "1.2.0",
-  "description": "Capability-safe staged routing and privacy-bounded Outcome Intelligence for Codex.",
+  "version": "1.3.0",
+  "description": "Thin Root, recursive dispatch, token-aware routing, and privacy-bounded Outcome Intelligence for Codex.",
   "author": {
     "name": "williamxhero"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex Adaptive Router",
-    "shortDescription": "Separate model capability from reasoning budget.",
-    "longDescription": "Builds capability-floor-safe staged plans, keeps final decisions Sol-owned, records privacy-bounded routing evidence locally, and proposes policy improvements only after repeated evidence and shadow validation.",
+    "shortDescription": "Route capability, effort, execution mode, and token budget independently.",
+    "longDescription": "Applies capability and quality floors before token-aware direct, subagent, or visible-task execution; enforces depth-two recursive leases and single-writer ownership; and learns only from privacy-bounded observed execution evidence.",
     "developerName": "williamxhero",
     "category": "Developer Tools",
     "capabilities": [
-      "Adaptive subagent routing",
+      "Thin Root token-aware routing",
       "Capability-floor-safe staged plans",
-      "Local routing history",
-      "Shadow policy evaluation",
-      "Outcome Intelligence metrics",
-      "Gardener-compatible learning proposals",
-      "Quant research routing profile"
+      "Depth-two recursive dispatch",
+      "Single-writer stage leases",
+      "Visible-task lifecycle contracts",
+      "Local exact-token provenance",
+      "Privacy-bounded Outcome Intelligence",
+      "Quant attribution routing profile"
     ],
     "defaultPrompt": [
-      "Use Codex Adaptive Router to plan the safest model and reasoning route for this task.",
-      "Show the current Adaptive Router policy status and any pending learning proposals."
+      "Use Codex Adaptive Router to plan the safest and lowest-total-token execution route for this task.",
+      "Show the current Adaptive Router dispatch, evidence, and learning status."
     ]
   },
   "mcpServers": "./.mcp.json"

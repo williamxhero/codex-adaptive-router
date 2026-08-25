@@ -1,140 +1,167 @@
 # Codex Adaptive Router
 
-`codex-adaptive-router` 1.2.0 adds Capability–Budget Separation. Model capability (`Luna < Terra < Sol`) is independent from reasoning effort, every authority has a hard capability floor, and Route Plan v2 stages bounded specialist work while the Sol primary thread retains final intent, integration, and conclusions.
+Codex Adaptive Router 1.3.0 是一个面向 Codex 的 Thin Root（薄 Root）调度插件。它把“模型能力、推理强度、执行方式、预期总 token”拆成独立决策：先守住质量门和能力下限，再在 Root 直接执行、子代理和可见任务之间选择完整路线 token 更合理的方案。
 
-It is designed for all projects, with a generic profile by default and a stricter `quant` profile for quantitative research and backtesting.
+它不是一个“遇到关键词就选模型”的 first-match 路由器。Route Plan v3 会显式给出计划目标、dispatch readiness/blocker、递归深度、writer 所有权、handoff 合同和 planned token；Outcome Intelligence v4 则另外记录实际执行者与验收结果。
 
-## What it does
+## 核心能力
 
-| Work state | Route |
-| --- | --- |
-| Tiny, bounded task | Primary thread directly |
-| Code search, logs, references, call chains | `router_code_mapper` — Luna Medium |
-| Defined tests, scans, sweeps, benchmarks, metrics | `router_experiment_runner` — Luna Medium |
-| Frozen specification, complex implementation | `router_research_engineer` — Terra High |
-| Diagnosis, research, causal/statistical judgment | `router_researcher` — Sol High |
-| Durable architecture or domain semantics | `router_architect` — Sol High |
-| Adversarial review or anomalously strong result | `router_adversarial_auditor` — Sol XHigh |
-| Valuable open exploration or local optimum escape | `router_strategy_scout` — Sol XHigh |
+- **Thin Root**：Root 保留意图、集成、验收和最终答复；复杂的证据、实现、研究与审计交给有明确边界的 specialist。
+- **质量优先**：用户约束、安全、authority/capability floor、质量与隔离要求先于 token 比较。
+- **Token-aware routing**：比较 Root 直接执行与“路由 + handoff + worker + 验证 + Root 验收”的预期总 token。只有 Root Sol Medium 足以满足质量、无需隔离/长期执行、也没有 worker-required stage，且节省量达到 Profile v4 门槛时，复杂路线才出现 direct 例外。
+- **不静默兜底**：复杂任务需要 worker 而 worker 不可用时，计划返回 `worker_unavailable`；Root 不会悄悄接管。
+- **递归调度**：Root 深度 0、子代理深度 1、孙代理深度 2。子代理可顺序多次冻结并重路由剩余工作，但深度 2 不得继续派发。
+- **并发和写权**：同一父级默认一个 active specialist；明确独立且全部只读时最多并发 3 个；同一逻辑仓库整棵调度树只有一个 active writer lease。
+- **可见任务**：长期、跨项目或明确要求上下文隔离时选择 `visible_task`。只有 Root 能创建；标题格式是 `[AR][MODEL-EFFORT] 简短目标`；成功且质量门通过后才可归档。
+- **实际执行证据**：planned role/model/effort/target 与 observed provenance 分开记录，避免把计划当成事实。
+- **Outcome Intelligence**：学习只使用边界、scope、verification 和 plan match 合格的实际执行路线；model 与 effort 严格单轴归因，多轴变化标记为 confounded。
+- **隐私边界**：本地可保存有来源的 exact token；GitHub evolution batch 只允许 token band/aggregate、HMAC、UUID、计数和枚举字段。
 
-Luna and Terra generate bounded evidence or implementation. They never own unresolved research, architecture, statistical, market-semantic, or irreversible decisions.
+## Model 不等于 Effort
 
-Reasoning effort never compensates for a model below its floor. Evidence requires at least Luna, implementation requires at least Terra, and decision or audit authority requires Sol. Max and Ultra are never automatic; they require an explicit user constraint or a human-confirmed policy override.
+模型决定能力边界，effort 决定合法模型获得多少推理预算。更高 effort 不能让 Luna 获得 Sol 的研究/决策权，也不能让 Terra 独立解决未冻结语义。
 
-Route Plan v2 uses deterministic templates: tiny direct work stays Root Sol Medium; discovery collects with Luna then returns to the Root; implementation uses Root Sol Medium for intent/integration around Terra implementation and Luna verification; research and architecture delegate High-budget decision stages to named Sol specialists. `direct` always means the current Root at Sol Medium. High-impact plans use an auditor specialist, and an `exceptional_positive` outcome adds an idempotent required Sol XHigh audit follow-up when the immutable original plan lacked one.
+| 模型 | 默认职责 | 能力边界 |
+| --- | --- | --- |
+| Luna | 搜索、数据脉络、日志、已定义测试/扫描/指标 | evidence only |
+| Terra | 已冻结规格的复杂实现 | implementation only |
+| Sol | 研究、诊断、架构、统计判断、审计、最终验收 | decision / audit |
 
-## Important capability boundary
+| 角色 | 默认模型与 effort | 权限 |
+| --- | --- | --- |
+| `router_code_mapper` | Luna Medium | 只读证据 |
+| `router_experiment_runner` | Luna Medium | 只读实验 |
+| `router_research_engineer` | Terra High | 冻结规格 writer |
+| `router_researcher` | Sol High | 研究与因果判断 |
+| `router_quant_researcher` | Sol High | 量化归因与统计结论 |
+| `router_architect` | Sol High | 架构、时序、会计和市场语义 |
+| `router_adversarial_auditor` | Sol XHigh | 对抗审计 |
+| `router_strategy_scout` | Sol XHigh | 开放探索 |
 
-The plugin automatically routes **subagents**. A normal Codex Hook cannot change the model already selected for the active primary thread. The intended global default is therefore Sol Medium for the primary thread, with automatic specialist routing for the parts that need a different capability or reasoning depth.
+Max 和 Ultra 从不自动出现。它们只来自用户明确约束或已经过人工确认的 policy override。
 
-True pre-thread primary-model selection needs a separate Codex App Server/SDK launcher; it is intentionally not hidden inside this plugin.
+## 三种执行目标
 
-## Layout
+### `direct`
+
+适合 tiny/bounded、可逆、Root Sol Medium 能完整保证质量的工作，也适用于显著节省完整路线 token 的受限 direct 例外。
+
+### `subagent`
+
+复杂任务的默认方式。每个 delegated stage 在执行前必须 claim lease，并携带严格 agent package：bounded objective、role/model/effort、authority、读写边界、deliverable、verification、freeze/escalation 和 handback 合同。
+
+### `visible_task`
+
+只用于长期、跨项目或上下文隔离任务。高 token 本身不是创建可见任务的理由。Root 负责创建和最终归档；失败、blocked、provisional 或审计未通过的任务保持可见。
+
+## Route Plan v3 与递归 lease
+
+Route Plan v3 是不可变计划。它包含 Profile v4 版本、stage identity/attempt、execution target/mode、depth、access mode、dispatch blocker、writer ownership、handoff contract 和完整路线 token estimate。
+
+运行中的变化进入 lease/observed state，而不是改写计划：
 
 ```text
-codex-adaptive-router/
-├── .codex-plugin/plugin.json       Plugin metadata
-├── .mcp.json                       Local stdio MCP registration
-├── hooks/hooks.json                Context injection and privacy-bounded lifecycle events
-├── profiles/                       generic and quant routing policies
-├── skills/                         Runtime, maintenance, and install workflows
-├── templates/agents/               Namespaced global custom-agent definitions
-├── scripts/router_core.py          Deterministic routing and learning engine
-├── scripts/router_mcp.py           MCP server
-├── scripts/router_hook.py          Hook adapter
-├── scripts/install_user_layer.py   Backup-first global-agent/config installer
-├── scripts/uninstall_user_layer.py Namespaced-agent remover
-├── tests/                          Standard-library regression tests
-└── docs/                           Detailed architecture and Gardener bridge
+Root (depth 0)
+  -> child lease (depth 1)
+       -> grandchild lease (depth 2)
+       -> freeze mismatch
+       -> reroute remaining work with a new plan/lease
+  -> Root verification and acceptance
 ```
 
-## Outcome Intelligence loop
+同一父级的独立只读并发必须在 Route Plan 中显式声明 2–3 个槽位，并在 claim 时为每项提供不同的 independence key；普通只读 stage 默认串行。writer exclusivity 使用仓库 HMAC，而不是保存原始路径。lease 不使用墙钟自动 TTL，避免长任务、睡眠或恢复导致 writer 被错误回收。
+
+## 量化研究示例
+
+高不确定量化归因不会由 Luna/Terra 独立下结论：
 
 ```text
-User task
-  -> UserPromptSubmit creates task_ref + initial route
-  -> route_plan(task_ref=...) confirms it without rerouting
-  -> tool and subagent hooks uniquely associate bounded agent lifecycles to planned stages
-  -> Stop creates a provisional outcome; later verification/correction enriches it
-  -> objective, user-confirmed replacement evidence creates axis-specific proposals
-  -> eligible tasks compare incumbent + candidate without enforcing the candidate
-  -> Explicit user confirmation activates the new versioned policy
+router_quant_researcher / Sol High：冻结研究问题与判断标准
+  -> router_code_mapper 或 router_experiment_runner / Luna Medium：证据与指标
+  -> router_research_engineer / Terra High：仅在协议已冻结时实现
+  -> router_quant_researcher / Sol High：归因、统计判断与结论
+  -> router_adversarial_auditor / Sol XHigh：高影响、冲突或异常优秀结果审计
 ```
 
-The hooks fail open: a routing-storage or classification issue never blocks ordinary Codex work. Codex 0.147 does not execute async hooks, so the lifecycle/evidence-critical `PostToolUse`, `SubagentStop`, and `Stop` hooks run synchronously with a three-second timeout per hook; `router_hook.py` still returns a fail-open response on handled errors.
+交易时序、fill、T+1、停牌、涨跌停、连续合约、保证金和会计语义仍交给 `router_architect`。
 
-### v1.1.1 task-ref/store consistency hotfix
+运行中发现 exceptional-positive 结果时，Router 会追加一个不改写原 Route Plan 的可 claim Sol XHigh audit follow-up；审计 outcome 必须绑定已完成、实际观测且全门通过的 audit lease。
 
-Hooks and the MCP server now write to one canonical runtime root: `CODEX_ADAPTIVE_ROUTER_DATA` when explicitly set, otherwise `CODEX_HOME/codex-adaptive-router` (or `~/.codex/codex-adaptive-router`). `PLUGIN_DATA` is legacy-read-only and is never the primary write root. When an MCP-only `task_ref` exists in an older `CODEX_HOME/plugins/data/codex-adaptive-router-*` store, the Router imports only that task's validated, privacy-bounded v2 events into the canonical store, preserving its route ID and deduplicating by event ID and dedupe key. Conflicting legacy route IDs fail closed.
+## Outcome Intelligence v4
 
-### v1.2.0 Capability–Budget Separation
+本地 outcome 记录：
 
-Profiles use schema v3 with explicit authority, capability floor, legal models, independent effort bands, and Sol escalation conditions. Decision Features v2 accepts any documented subset and deterministically fills the remainder. Outcome Intelligence v3 separates model, effort, context, tool-data, and execution failure axes; multi-axis replacements are confounded rather than misattributed. Agent lifecycle hooks associate only a unique role/model/effort match to an unfinished required stage using HMAC identity; stop records completion but never objective verification. Stage completion is validated against the stored plan, adjacent objectively verified stages drive handoff metrics, and model/effort under/over rates use independent known-fit denominators.
+- dispatch target 与 delegation depth；
+- observed role/model/effort/target 及 plan match；
+- boundary、scope、verification、archive 状态；
+- stage lease HMAC 和状态；
+- model/effort/context/tool-data/execution failure axis；
+- 有稳定来源时的 exact input/output/total token。
 
-See [Capability–Budget ADR](docs/adr/0001-capability-budget-separation.md) and [Outcome Intelligence](docs/outcome-intelligence.md).
+当前稳定 Hook 表面并不保证每个子代理都提供 effort 和 token usage。插件不会解析不稳定 transcript 伪造 exact token：有 Codex/provider usage 或精确调用方报告就记录实际值，没有就保留 unknown。估算值只属于 Route Plan，永远不写进 actual token 字段。
 
-## Learning safeguards
+学习只使用 observed route 的唯一 primary stage。模型证据必须固定 role、effort、execution target、depth、stage 与 task class；effort 证据必须固定 role、model、execution target、depth、stage 与 task class。context/tool data 缺失、worker unavailable、lease conflict、scope/boundary 失败、plan deviation 未解释或多轴变化都不会产生自动建议，也不能计入可比较 shadow 结果。
 
-The local event log uses a private local salt and HMAC identities. It stores append-only event IDs/sequences plus structured classifications and aggregates. It never stores or uploads raw prompts, paths, code, tool input/output, assistant messages, transcripts, credentials, or secrets. Hooks fail open; GitHub sync and privacy validation fail closed.
+Policy 不能自动晋升。候选仍需重复的客观证据、跨 session 支持、非强制 shadow evaluation，以及用户明确确认。
 
-A learned policy cannot activate from one task. It must pass all of these gates:
+## 隐私与 GitHub evolution
 
-1. At least five same-direction, objective, user-confirmed replacement outcomes across three sessions, mean confidence `>= 0.85`, and no verified high-risk regression.
-2. At least two distinct project fingerprints before a proposal is global.
-3. Role, model, and effort proposals are independent axes.
-4. Shadow readiness requires 10 comparable observations, 8 candidate wins, at most 1 loss, and no high-risk regression. An unexecuted downgrade is inconclusive.
-5. An explicit `confirmed_by_user: true` tool call.
+本地身份使用私有 salt + HMAC。同步到 GitHub 前会做显式 v4 projection，拒绝：
 
-Contextual bandits and automatically learned classifier weights are prohibited before a later design review with 50-100 high-quality outcomes. v1 evidence stays read-only.
+- raw prompt、路径、代码、日志；
+- tool input/output、assistant message、transcript；
+- 标题、objective、credentials、secrets；
+- exact local token 和 planned token 数字。
 
-## GitHub evolution governance
+公开批次只保留 token band/aggregate、HMAC、枚举、UUID、sequence、计数和时间。v1-v3 evidence、旧 batches/manifests/metrics 只读兼容，不重写既有 CRLF/LF 字节或 hash chain。新文本和演进产物显式使用 LF。
 
-The sync writes immutable `batches/`, hash-chained `manifests/`, versioned `policies/revision-N.json`, and recomputable `metrics/revision-N.json`; `latest.json` is the only mutable pointer. Root-level v1 artifacts are marked legacy. CI rejects schema, privacy, secret/path, hash-chain, duplicate-ID, and append-only violations. A run without `--push` uses a temporary preview and leaves the dedicated clone clean.
+## 安装
 
-The active policy is versioned under the canonical runtime root. `PLUGIN_DATA` is consulted only as a legacy source for task-level compatibility.
-
-## Codex-Gardener integration
-
-Adaptive Router and Codex-Gardener remain independent plugins.
-
-- Router owns machine-readable route telemetry and the executable policy.
-- Gardener owns cross-session curation, conflict checks, scope selection, and promotion review.
-- `adaptive_router.router_policy_status` emits `gardener_candidates` without raw prompts or paths.
-- A dedicated Router maintenance task may pass those candidate fields into Gardener's ordinary curation process.
-- Neither plugin relies on Hook ordering or reaches into the other plugin's cache directory.
-
-See [Gardener bridge](docs/gardener-bridge.md) for the handoff contract.
-
-## Install after review
-
-This repository directory is the source package; it has not modified any user-level Codex files.
-
-1. Add this plugin to a personal or repository marketplace and install it in Codex.
-2. Review and trust its Hooks in Codex.
-3. If you want its custom agents available in every project, run:
-
-   ```powershell
-   python scripts\install_user_layer.py
-   ```
-
-4. Add `--set-root-model` only if every newly created primary thread should default to `gpt-5.6-sol` / Medium:
-
-   ```powershell
-   python scripts\install_user_layer.py --set-root-model
-   ```
-
-The installer makes timestamped backups of existing `config.toml` and `router_*.toml` agent files before replacing them. It does not touch any project configuration.
-
-## Validate locally
+插件安装后，如需把 namespaced custom agents 安装到用户级 Codex 配置：
 
 ```powershell
-python scripts\validate_router.py
-python -m unittest discover -s tests -v
+python scripts\install_user_layer.py
 ```
 
-## Current limitations
+如需同时把新 Root 默认设为 Sol Medium：
 
-- Decision Features v2 performs deterministic structured risk/cognitive classification; keywords are only a fallback and callers may provide any known subset.
-- Cost/quality outcomes are intentionally evidence-driven; token usage is not assumed to be available from every Codex Hook surface.
-- The Router does not automatically use Max or Ultra.
-- An active thread's primary model remains unchanged; use a future launcher for true pre-thread model selection.
+```powershell
+python scripts\install_user_layer.py --set-root-model
+```
+
+安装器先做时间戳备份，只管理 `router_*.toml` 和自己的配置片段。发布流程使用 Codex plugin cachebuster 重新安装 personal 插件，不直接修改 marketplace。
+
+## 验证
+
+```powershell
+python -m pip install jsonschema ruff
+python -m unittest discover -s tests -v
+python -m ruff check .
+python scripts\validate_router.py
+python scripts\validate_evolution.py
+python scripts\validate_agent_packages.py
+git diff --check
+```
+
+CI 同时执行 unittest、Ruff、router/evolution validator、agent package contract、lifecycle smoke 和 diff-check。
+
+## 目录
+
+```text
+.codex-plugin/plugin.json       插件 1.3.0 manifest
+profiles/                       Profile v4 generic / quant
+templates/agents/               八个 namespaced specialist package
+scripts/router_core.py          planner、dispatch/lease、Outcome Intelligence
+scripts/router_mcp.py           Route Plan 与 stage lifecycle MCP
+evolution-data/schemas/         public Evidence v2/v3/v4 schema
+tests/                          legacy、Windows、privacy、递归与 token 回归
+docs/adr/                       能力预算与 Thin Root 决策记录
+```
+
+## 当前限制
+
+- 普通 Hook 不能热切换已运行主线程的模型；Root 的全局默认仍由用户层配置决定。
+- caller depth/Root-only 是调度不变量与审计边界，不是独立的安全认证系统。
+- hook-only 生命周期可能观察不到 effort 或 exact token；这时 provenance 明确为 unknown。
+- visible task 的创建/归档由 Codex App 工具执行，Router 负责规划、标题、eligibility 与审计合同。
+- Max/Ultra 不自动选择；策略变更始终需要人工确认。
