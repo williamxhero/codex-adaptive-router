@@ -1,6 +1,6 @@
 # Codex Adaptive Router
 
-`codex-adaptive-router` 1.1 adds privacy-bounded Outcome Intelligence: each user turn becomes a correlated task, execution evidence is aggregated, outcomes produce metrics and axis-specific proposals, shadow evaluation remains non-enforcing, and only explicit human confirmation revises policy.
+`codex-adaptive-router` 1.1.1 adds privacy-bounded Outcome Intelligence and a task-ref/store consistency hotfix: each user turn becomes a correlated task, execution evidence is aggregated, outcomes produce metrics and axis-specific proposals, shadow evaluation remains non-enforcing, and only explicit human confirmation revises policy.
 
 It is designed for all projects, with a generic profile by default and a stricter `quant` profile for quantitative research and backtesting.
 
@@ -59,6 +59,10 @@ User task
 
 The hooks fail open: a routing-storage or classification issue never blocks ordinary Codex work.
 
+### v1.1.1 task-ref/store consistency hotfix
+
+Hooks and the MCP server now write to one canonical runtime root: `CODEX_ADAPTIVE_ROUTER_DATA` when explicitly set, otherwise `CODEX_HOME/codex-adaptive-router` (or `~/.codex/codex-adaptive-router`). `PLUGIN_DATA` is legacy-read-only and is never the primary write root. When an MCP-only `task_ref` exists in an older `CODEX_HOME/plugins/data/codex-adaptive-router-*` store, the Router imports only that task's validated, privacy-bounded v2 events into the canonical store, preserving its route ID and deduplicating by event ID and dedupe key. Conflicting legacy route IDs fail closed.
+
 ## Learning safeguards
 
 The local event log uses a private local salt and HMAC identities. It stores append-only event IDs/sequences plus structured classifications and aggregates. It never stores or uploads raw prompts, paths, code, tool input/output, assistant messages, transcripts, credentials, or secrets. Hooks fail open; GitHub sync and privacy validation fail closed.
@@ -77,7 +81,7 @@ Contextual bandits and automatically learned classifier weights are prohibited b
 
 The sync writes immutable `batches/`, hash-chained `manifests/`, versioned `policies/revision-N.json`, and recomputable `metrics/revision-N.json`; `latest.json` is the only mutable pointer. Root-level v1 artifacts are marked legacy. CI rejects schema, privacy, secret/path, hash-chain, duplicate-ID, and append-only violations. A run without `--push` uses a temporary preview and leaves the dedicated clone clean.
 
-The active policy is versioned at `PLUGIN_DATA/policy/current.json` when Codex supplies `PLUGIN_DATA`; otherwise it uses `~/.codex/codex-adaptive-router/`.
+The active policy is versioned under the canonical runtime root. `PLUGIN_DATA` is consulted only as a legacy source for task-level compatibility.
 
 ## Codex-Gardener integration
 

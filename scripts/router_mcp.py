@@ -1,4 +1,4 @@
-"""Dependency-free stdio MCP surface for Router Engine v1.1."""
+"""Dependency-free stdio MCP surface for Router Engine v1.1.1."""
 
 from __future__ import annotations
 
@@ -18,18 +18,95 @@ BANDS = ["unknown", "low", "medium", "high", "very_high"]
 TOOLS = [
     {
         "name": "route_plan",
-        "description": "Plan or idempotently confirm a task route using structured decision features.",
+        "description": "Plan a new route or idempotently confirm an existing task_ref. Decision Features v1 accepts only the documented fields and enums; omit task when confirming a known task_ref.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "task": {"type": "string", "minLength": 1},
                 "task_ref": {"type": "string", "pattern": "^[0-9a-f]{24,64}$"},
                 "profile": {"type": "string", "enum": ["generic", "quant"]},
-                "task_state": {"type": "string", "enum": ["unknown", "frozen"]},
+                "task_state": {
+                    "type": "string",
+                    "enum": ["unknown", "frozen"],
+                    "description": "Use only 'unknown' until the relevant specification is settled; use 'frozen' after its semantics are fixed.",
+                },
                 "force_role": {"type": "string", "enum": sorted(router_core.VALID_ROLES)},
                 "session_id": {"type": "string"},
                 "project_fingerprint": {"type": "string"},
-                "decision_features": {"type": "object"},
+                "decision_features": {
+                    "type": "object",
+                    "properties": {
+                        "operation_mode": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["operation_mode"]),
+                        },
+                        "scope": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["scope"]),
+                        },
+                        "spec_state": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["spec_state"]),
+                        },
+                        "reversibility": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["reversibility"]),
+                        },
+                        "cognitive_type": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["cognitive_type"]),
+                        },
+                        "risk_domains": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": sorted(router_core.KNOWN_RISK_DOMAINS),
+                            },
+                        },
+                        "workload": {
+                            "type": "string",
+                            "enum": sorted(router_core.FEATURE_VALUES["workload"]),
+                        },
+                        "user_constraints": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "role",
+                                    "model",
+                                    "reasoning_effort",
+                                    "no_delegation",
+                                ],
+                            },
+                        },
+                        "feature_source": {
+                            "type": "string",
+                            "enum": [
+                                "structured_heuristic",
+                                "caller_supplied",
+                                "legacy_v1",
+                            ],
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1,
+                        },
+                    },
+                    "required": [
+                        "operation_mode",
+                        "scope",
+                        "spec_state",
+                        "reversibility",
+                        "cognitive_type",
+                        "risk_domains",
+                        "workload",
+                        "user_constraints",
+                        "feature_source",
+                        "confidence",
+                    ],
+                    "additionalProperties": False,
+                },
                 "constraints": {
                     "type": "object",
                     "properties": {
@@ -216,7 +293,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "codex-adaptive-router", "version": "1.1.0"},
+                "serverInfo": {"name": "codex-adaptive-router", "version": "1.1.1"},
             },
         }
     if method == "tools/list":

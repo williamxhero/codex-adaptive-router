@@ -17,6 +17,232 @@ import router_mcp
 
 
 class RouterMcpTests(unittest.TestCase):
+    def test_hook_and_independent_mcp_share_task_ref_without_plugin_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / "codex-home"
+            legacy_root = codex_home / "plugins" / "data" / "codex-adaptive-router-test"
+            hook_environment = os.environ.copy()
+            hook_environment.pop("CODEX_ADAPTIVE_ROUTER_DATA", None)
+            hook_environment["CODEX_HOME"] = str(codex_home)
+            hook_environment["PLUGIN_DATA"] = str(legacy_root)
+            hook = subprocess.run(
+                [sys.executable, str(PLUGIN_ROOT / "scripts" / "router_hook.py"), "UserPromptSubmit"],
+                input=json.dumps(
+                    {
+                        "session_id": "session-1",
+                        "turn_id": "turn-1",
+                        "prompt": "Search code for the accounting implementation.",
+                    }
+                )
+                + "\n",
+                text=True,
+                capture_output=True,
+                cwd=PLUGIN_ROOT,
+                env=hook_environment,
+                check=True,
+            )
+            context = json.loads(hook.stdout)["hookSpecificOutput"][
+                "additionalContext"
+            ]
+            task_ref = context.split("task_ref=", 1)[1].split(";", 1)[0]
+
+            mcp_environment = hook_environment.copy()
+            mcp_environment.pop("PLUGIN_DATA")
+            request = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "route_plan",
+                    "arguments": {"task_ref": task_ref},
+                },
+            }
+            mcp = subprocess.run(
+                [sys.executable, str(SERVER)],
+                input=json.dumps(request) + "\n",
+                text=True,
+                capture_output=True,
+                cwd=PLUGIN_ROOT,
+                env=mcp_environment,
+                check=True,
+            )
+            reply = json.loads(mcp.stdout)
+            route = reply["result"]["structuredContent"]
+
+            route_events = []
+            for root in (codex_home / "codex-adaptive-router", legacy_root):
+                path = root / "events" / "routing.jsonl"
+                if path.exists():
+                    route_events.extend(
+                        item
+                        for item in map(json.loads, path.read_text().splitlines())
+                        if item["type"] == "route"
+                    )
+            self.assertEqual(len(route_events), 1)
+            self.assertEqual(route["route_id"], route_events[0]["route_id"])
+
+    def test_task_ref_imports_matching_legacy_store_once_without_rewriting_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / "codex-home"
+            legacy_root = (
+                codex_home / "plugins" / "data" / "codex-adaptive-router-market"
+            )
+            legacy_engine = router_mcp.router_core.RouterEngine(legacy_root)
+            task = legacy_engine.begin_task(
+                session_id="legacy-session",
+                turn_id="legacy-turn",
+                prompt="Search code for the accounting implementation.",
+            )
+            legacy_engine.finalize_task(
+                task["task_ref"],
+                status="completed",
+                quality_gate="provisional",
+                confidence=0.5,
+            )
+            canonical_root = codex_home / "codex-adaptive-router"
+            router_mcp.router_core.RouterEngine(canonical_root).begin_task(
+                session_id="canonical-session",
+                turn_id="canonical-turn",
+                prompt="Run tests and collect metrics.",
+            )
+            legacy_events = router_mcp.router_core.events_path(legacy_root)
+            legacy_ledger = router_mcp.router_core.ledger_path(legacy_root)
+            original_events = legacy_events.read_bytes()
+            original_ledger = legacy_ledger.read_bytes()
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "CODEX_ADAPTIVE_ROUTER_DATA": "",
+                    "PLUGIN_DATA": "",
+                },
+            ):
+                first = router_mcp._tool_call(
+                    "route_plan", {"task_ref": task["task_ref"]}
+                )
+                second = router_mcp._tool_call(
+                    "route_plan", {"task_ref": task["task_ref"]}
+                )
+
+            self.assertEqual(first["route_id"], task["route_id"])
+            self.assertEqual(second, first)
+            self.assertEqual(legacy_events.read_bytes(), original_events)
+            self.assertEqual(legacy_ledger.read_bytes(), original_ledger)
+            imported = router_mcp.router_core._all_events(canonical_root)
+            matching = [
+                item for item in imported if item["task_ref"] == task["task_ref"]
+            ]
+            self.assertEqual(len(imported), 3)
+            self.assertEqual(len(matching), 2)
+            self.assertEqual(matching[0]["route_id"], task["route_id"])
+            self.assertEqual([item["sequence"] for item in imported], [1, 2, 3])
+
+    def test_task_ref_fails_closed_on_conflicting_legacy_route_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / "codex-home"
+            first_root = codex_home / "plugins" / "data" / "codex-adaptive-router-a"
+            second_root = codex_home / "plugins" / "data" / "codex-adaptive-router-b"
+            task = router_mcp.router_core.RouterEngine(first_root).begin_task(
+                session_id="legacy-session",
+                turn_id="legacy-turn",
+                prompt="Search code for the accounting implementation.",
+            )
+            event = router_mcp.router_core._all_events(first_root)[0]
+            conflicting = dict(event)
+            conflicting["route_id"] = "f" * 32
+            conflicting["event_id"] = "e" * 32
+            conflicting["dedupe_key"] = f"route:{task['task_ref']}:conflict"
+            target = router_mcp.router_core.events_path(second_root)
+            target.parent.mkdir(parents=True)
+            target.write_text(json.dumps(conflicting) + "\n", encoding="utf-8")
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "CODEX_ADAPTIVE_ROUTER_DATA": "",
+                    "PLUGIN_DATA": "",
+                },
+            ), self.assertRaisesRegex(ValueError, "conflicting legacy route_id"):
+                router_mcp._tool_call(
+                    "route_plan", {"task_ref": task["task_ref"]}
+                )
+
+            canonical_root = codex_home / "codex-adaptive-router"
+            self.assertFalse(router_mcp.router_core.events_path(canonical_root).exists())
+
+    def test_legacy_import_preserves_partial_canonical_log_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / "codex-home"
+            legacy_root = (
+                codex_home / "plugins" / "data" / "codex-adaptive-router-market"
+            )
+            task = router_mcp.router_core.RouterEngine(legacy_root).begin_task(
+                session_id="legacy-session",
+                turn_id="legacy-turn",
+                prompt="Search code for the accounting implementation.",
+            )
+            canonical_events = router_mcp.router_core.events_path(
+                codex_home / "codex-adaptive-router"
+            )
+            canonical_events.parent.mkdir(parents=True)
+            partial = b'{"partial":'
+            canonical_events.write_bytes(partial)
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "CODEX_ADAPTIVE_ROUTER_DATA": "",
+                    "PLUGIN_DATA": "",
+                },
+            ), self.assertRaisesRegex(ValueError, "invalid canonical event log"):
+                router_mcp._tool_call(
+                    "route_plan", {"task_ref": task["task_ref"]}
+                )
+
+            self.assertEqual(canonical_events.read_bytes(), partial)
+
+    def test_legacy_import_rejects_unsafe_canonical_event_without_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory) / "codex-home"
+            legacy_root = (
+                codex_home / "plugins" / "data" / "codex-adaptive-router-market"
+            )
+            task = router_mcp.router_core.RouterEngine(legacy_root).begin_task(
+                session_id="legacy-session",
+                turn_id="legacy-turn",
+                prompt="Search code for the accounting implementation.",
+            )
+            canonical_root = codex_home / "codex-adaptive-router"
+            router_mcp.router_core.RouterEngine(canonical_root).begin_task(
+                session_id="canonical-session",
+                turn_id="canonical-turn",
+                prompt="Run tests and collect metrics.",
+            )
+            canonical_events = router_mcp.router_core.events_path(canonical_root)
+            unsafe = router_mcp.router_core._all_events(canonical_root)
+            unsafe[0]["raw_prompt"] = "must never migrate"
+            canonical_events.write_text(
+                json.dumps(unsafe[0]) + "\n", encoding="utf-8"
+            )
+            original = canonical_events.read_bytes()
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "CODEX_ADAPTIVE_ROUTER_DATA": "",
+                    "PLUGIN_DATA": "",
+                },
+            ), self.assertRaisesRegex(ValueError, "invalid fields"):
+                router_mcp._tool_call(
+                    "route_plan", {"task_ref": task["task_ref"]}
+                )
+
+            self.assertEqual(canonical_events.read_bytes(), original)
+
     def test_stdio_server_initializes_and_routes(self) -> None:
         messages = "\n".join(
             [
@@ -55,7 +281,7 @@ class RouterMcpTests(unittest.TestCase):
         self.assertEqual(
             replies[0]["result"]["serverInfo"]["name"], "codex-adaptive-router"
         )
-        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "1.1.0")
+        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "1.1.1")
         payload = replies[1]["result"]["structuredContent"]
         self.assertEqual(payload["role"], "router_code_mapper")
         self.assertEqual(payload["model"], "gpt-5.6-luna")
@@ -90,6 +316,94 @@ class RouterMcpTests(unittest.TestCase):
             "decision_features", tools["route_plan"]["inputSchema"]["properties"]
         )
         self.assertIn("router_metrics", tools)
+
+    def test_route_plan_schema_matches_decision_features_v1(self) -> None:
+        reply = router_mcp.handle(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+        )
+        tools = {tool["name"]: tool for tool in reply["result"]["tools"]}
+        route_plan = tools["route_plan"]
+        schema = route_plan["inputSchema"]
+        features = schema["properties"]["decision_features"]
+        expected_fields = {
+            "operation_mode",
+            "scope",
+            "spec_state",
+            "reversibility",
+            "cognitive_type",
+            "risk_domains",
+            "workload",
+            "user_constraints",
+            "feature_source",
+            "confidence",
+        }
+        self.assertEqual(set(features["properties"]), expected_fields)
+        self.assertEqual(set(features["required"]), expected_fields)
+        self.assertFalse(features["additionalProperties"])
+        expected_enums = {
+            "operation_mode": {
+                "answer",
+                "diagnose",
+                "change",
+                "review",
+                "research",
+                "execute",
+                "monitor",
+            },
+            "scope": {"tiny", "bounded", "multi_file", "cross_system"},
+            "spec_state": {"unknown", "ambiguous", "frozen"},
+            "reversibility": {"reversible", "costly", "irreversible"},
+            "cognitive_type": {
+                "direct",
+                "discovery",
+                "execution",
+                "implementation",
+                "diagnosis",
+                "research",
+                "architecture",
+                "audit",
+                "exploration",
+            },
+            "workload": {"small", "medium", "large", "batch"},
+            "feature_source": {
+                "structured_heuristic",
+                "caller_supplied",
+                "legacy_v1",
+            },
+        }
+        for field, expected in expected_enums.items():
+            self.assertEqual(set(features["properties"][field]["enum"]), expected)
+        self.assertEqual(
+            set(features["properties"]["risk_domains"]["items"]["enum"]),
+            {
+                "quantitative_research",
+                "high_impact",
+                "security",
+                "privacy",
+                "production",
+                "financial",
+                "legal",
+                "medical",
+            },
+        )
+        self.assertEqual(
+            set(features["properties"]["user_constraints"]["items"]["enum"]),
+            {"role", "model", "reasoning_effort", "no_delegation"},
+        )
+        self.assertEqual(
+            features["properties"]["confidence"],
+            {"type": "number", "minimum": 0, "maximum": 1},
+        )
+        constraints = schema["properties"]["constraints"]
+        self.assertEqual(
+            set(constraints["properties"]),
+            {"role", "model", "reasoning_effort", "no_delegation"},
+        )
+        self.assertFalse(constraints["additionalProperties"])
+        task_state = schema["properties"]["task_state"]
+        self.assertEqual(task_state["enum"], ["unknown", "frozen"])
+        self.assertIn("only", task_state["description"].casefold())
+        self.assertIn("Decision Features v1", route_plan["description"])
 
     def test_route_plan_accepts_only_known_task_ref(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(

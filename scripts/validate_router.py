@@ -30,7 +30,7 @@ def main() -> int:
     manifest = load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json")
     if (
         manifest.get("name") != "codex-adaptive-router"
-        or manifest.get("version") != "1.1.0"
+        or manifest.get("version") != "1.1.1"
     ):
         raise ValueError("manifest identity/version is invalid")
     mcp = load_json(PLUGIN_ROOT / ".mcp.json")

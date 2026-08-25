@@ -265,14 +265,34 @@ def utc_now() -> str:
 
 
 def plugin_data_root() -> Path:
-    explicit = os.environ.get("CODEX_ADAPTIVE_ROUTER_DATA") or os.environ.get(
-        "PLUGIN_DATA"
-    )
+    explicit = os.environ.get("CODEX_ADAPTIVE_ROUTER_DATA")
     if explicit:
         return Path(explicit).expanduser().resolve()
-    return (
-        Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))
-        / "codex-adaptive-router"
+    return _codex_home() / "codex-adaptive-router"
+
+
+def _codex_home() -> Path:
+    return Path(
+        os.environ.get("CODEX_HOME") or (Path.home() / ".codex")
+    ).expanduser().resolve()
+
+
+def legacy_plugin_data_roots(canonical_root: Path | None = None) -> list[Path]:
+    canonical = (canonical_root or plugin_data_root()).resolve(strict=False)
+    candidates: set[Path] = set()
+    supplied = os.environ.get("PLUGIN_DATA")
+    if supplied:
+        candidates.add(Path(supplied).expanduser().resolve(strict=False))
+    legacy_parent = _codex_home() / "plugins" / "data"
+    if legacy_parent.is_dir():
+        candidates.update(
+            path.resolve(strict=False)
+            for path in legacy_parent.glob("codex-adaptive-router-*")
+            if path.is_dir()
+        )
+    return sorted(
+        (path for path in candidates if path != canonical and path.is_dir()),
+        key=lambda path: os.path.normcase(str(path)),
     )
 
 
@@ -297,6 +317,29 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
                     result.append(value)
     except OSError:
         pass
+    return result
+
+
+def _read_jsonl_strict(path: Path, label: str) -> list[dict[str, Any]]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        raise ValueError(f"unable to read {label} event log") from error
+    result: list[dict[str, Any]] = []
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"invalid {label} event log at line {number}"
+            ) from error
+        if not isinstance(value, dict):
+            raise TypeError(f"invalid {label} event log at line {number}")
+        result.append(value)
     return result
 
 
@@ -450,6 +493,21 @@ def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
             json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+def _atomic_write_jsonl(path: Path, values: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            for value in values:
+                handle.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
         with contextlib.suppress(FileNotFoundError):
@@ -1232,6 +1290,137 @@ class RouterEngine:
             f"followup:{previous['task_ref']}:{label}",
         )
 
+    @staticmethod
+    def _event_payload(
+        event: dict[str, Any], *, ignore_event_id: bool = False
+    ) -> dict[str, Any]:
+        ignored = {"sequence"}
+        if ignore_event_id:
+            ignored.add("event_id")
+        return {key: value for key, value in event.items() if key not in ignored}
+
+    def _legacy_task_events(self, task_ref: str) -> list[dict[str, Any]]:
+        if self.root.resolve(strict=False) != plugin_data_root().resolve(strict=False):
+            return []
+        by_event_id: dict[str, dict[str, Any]] = {}
+        by_dedupe_key: dict[str, dict[str, Any]] = {}
+        route_ids: set[str] = set()
+        for root in legacy_plugin_data_roots(self.root):
+            with _file_lock(ledger_path(root)):
+                events = [
+                    event
+                    for event in _read_jsonl_strict(events_path(root), "legacy")
+                    if event.get("task_ref") == task_ref
+                ]
+            for event in events:
+                validate_evidence_event(event)
+                if event["type"] == "route":
+                    route_ids.add(str(event["route_id"]))
+                event_id = str(event["event_id"])
+                previous = by_event_id.get(event_id)
+                if previous is not None:
+                    if self._event_payload(previous) != self._event_payload(event):
+                        raise ValueError(
+                            f"conflicting legacy event_id for task_ref {task_ref}"
+                        )
+                    continue
+                dedupe_key = event.get("dedupe_key")
+                if dedupe_key:
+                    previous = by_dedupe_key.get(str(dedupe_key))
+                    if previous is not None:
+                        if self._event_payload(
+                            previous, ignore_event_id=True
+                        ) != self._event_payload(event, ignore_event_id=True):
+                            raise ValueError(
+                                f"conflicting legacy dedupe_key for task_ref {task_ref}"
+                            )
+                        continue
+                    by_dedupe_key[str(dedupe_key)] = event
+                by_event_id[event_id] = event
+        if len(route_ids) > 1:
+            raise ValueError(f"conflicting legacy route_id for task_ref {task_ref}")
+        if not route_ids:
+            return []
+        return sorted(
+            by_event_id.values(),
+            key=lambda event: (
+                int(event.get("sequence") or 0),
+                str(event.get("created_at") or ""),
+                str(event.get("event_id") or ""),
+            ),
+        )
+
+    def _import_legacy_task(self, task_ref: str, ledger: dict[str, Any]) -> bool:
+        legacy_events = self._legacy_task_events(task_ref)
+        if not legacy_events:
+            return False
+        current_events = _read_jsonl_strict(
+            events_path(self.root), "canonical"
+        )
+        previous_sequence = 0
+        seen_event_ids: set[str] = set()
+        seen_dedupe_keys: set[str] = set()
+        for event in current_events:
+            validate_evidence_event(event)
+            sequence = int(event["sequence"])
+            if sequence <= previous_sequence:
+                raise ValueError("canonical event sequence is not strictly increasing")
+            previous_sequence = sequence
+            event_id = str(event["event_id"])
+            if event_id in seen_event_ids:
+                raise ValueError("duplicate canonical event_id")
+            seen_event_ids.add(event_id)
+            dedupe_key = event.get("dedupe_key")
+            if dedupe_key and str(dedupe_key) in seen_dedupe_keys:
+                raise ValueError("duplicate canonical dedupe_key")
+            if dedupe_key:
+                seen_dedupe_keys.add(str(dedupe_key))
+        by_event_id = {str(event.get("event_id")): event for event in current_events}
+        by_dedupe_key = {
+            str(event["dedupe_key"]): event
+            for event in current_events
+            if event.get("dedupe_key")
+        }
+        missing: list[dict[str, Any]] = []
+        next_sequence = max(
+            [int(ledger.get("next_sequence") or 1)]
+            + [int(event.get("sequence") or 0) + 1 for event in current_events]
+        )
+        for event in legacy_events:
+            event_id = str(event["event_id"])
+            existing = by_event_id.get(event_id)
+            if existing is not None:
+                if self._event_payload(existing) != self._event_payload(event):
+                    raise ValueError(
+                        f"conflicting canonical event_id for task_ref {task_ref}"
+                    )
+                continue
+            dedupe_key = event.get("dedupe_key")
+            if dedupe_key and str(dedupe_key) in by_dedupe_key:
+                existing = by_dedupe_key[str(dedupe_key)]
+                if self._event_payload(
+                    existing, ignore_event_id=True
+                ) != self._event_payload(event, ignore_event_id=True):
+                    raise ValueError(
+                        f"conflicting canonical dedupe_key for task_ref {task_ref}"
+                    )
+                continue
+            imported = dict(event)
+            imported["sequence"] = next_sequence
+            next_sequence += 1
+            validate_evidence_event(imported)
+            missing.append(imported)
+            by_event_id[event_id] = imported
+            if dedupe_key:
+                by_dedupe_key[str(dedupe_key)] = imported
+        if missing:
+            _atomic_write_jsonl(events_path(self.root), current_events + missing)
+        rebuilt = self._ledger()
+        if task_ref not in rebuilt["tasks"]:
+            raise ValueError(f"legacy route event missing for task_ref {task_ref}")
+        _atomic_write_json(ledger_path(self.root), rebuilt)
+        return True
+
     def plan_route(
         self,
         task: str | None = None,
@@ -1248,6 +1437,12 @@ class RouterEngine:
     ) -> dict[str, Any]:
         with _file_lock(ledger_path(self.root)):
             ledger = self._ledger()
+            if (
+                task_ref
+                and task_ref not in ledger["tasks"]
+                and self._import_legacy_task(task_ref, ledger)
+            ):
+                ledger = self._ledger()
             if task_ref and task_ref in ledger["tasks"]:
                 return dict(ledger["tasks"][task_ref]["route"])
             if task is None or not task.strip():
@@ -2082,7 +2277,7 @@ def hook_context(
         return {
             "hookSpecificOutput": {
                 "hookEventName": event,
-                "additionalContext": "Codex Adaptive Router v1.1 is active; policy changes remain human-confirmed.",
+                "additionalContext": "Codex Adaptive Router v1.1.1 is active; policy changes remain human-confirmed.",
             }
         }
     if event == "UserPromptSubmit":
