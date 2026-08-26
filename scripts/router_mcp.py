@@ -8,9 +8,14 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+PLUGIN_ROOT = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 import router_core
+
+PLUGIN_VERSION = json.loads(
+    (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+)["version"]
 
 MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
 EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"]
@@ -442,7 +447,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "codex-adaptive-router", "version": "1.3.0"},
+                "serverInfo": {"name": "codex-adaptive-router", "version": PLUGIN_VERSION},
             },
         }
     if method == "tools/list":

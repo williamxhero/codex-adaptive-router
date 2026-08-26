@@ -1,0 +1,3 @@
+[mcp_servers.adaptive_router]
+command = "python"
+args = ["./scripts/router_mcp.py"]

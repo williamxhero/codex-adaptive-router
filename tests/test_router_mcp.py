@@ -85,7 +85,7 @@ class RouterMcpTests(unittest.TestCase):
         initialized = router_mcp.handle(
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
         )
-        self.assertEqual(manifest["version"], "1.3.0")
+        self.assertRegex(manifest["version"], r"^1\.3\.0(?:\+codex\.\d{14})?$")
         self.assertEqual(
             initialized["result"]["serverInfo"]["version"], manifest["version"]
         )
@@ -354,7 +354,14 @@ class RouterMcpTests(unittest.TestCase):
         self.assertEqual(
             replies[0]["result"]["serverInfo"]["name"], "codex-adaptive-router"
         )
-        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "1.3.0")
+        self.assertEqual(
+            replies[0]["result"]["serverInfo"]["version"],
+            json.loads(
+                (PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(
+                    encoding="utf-8"
+                )
+            )["version"],
+        )
         payload = replies[1]["result"]["structuredContent"]
         self.assertEqual(payload["role"], "direct")
         self.assertEqual(payload["model"], "gpt-5.6-sol")

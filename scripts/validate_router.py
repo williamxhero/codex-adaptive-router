@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import compileall
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -19,6 +20,12 @@ sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 import router_core
 
 
+RELEASE_VERSION = "1.3.0"
+CACHEBUSTER_VERSION = re.compile(
+    rf"^{re.escape(RELEASE_VERSION)}\+codex\.\d{{14}}$"
+)
+
+
 def load_json(path: Path) -> dict:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -28,10 +35,10 @@ def load_json(path: Path) -> dict:
 
 def main() -> int:
     manifest = load_json(PLUGIN_ROOT / ".codex-plugin" / "plugin.json")
-    if (
-        manifest.get("name") != "codex-adaptive-router"
-        or manifest.get("version") != "1.3.0"
-    ):
+    version = manifest.get("version")
+    if manifest.get("name") != "codex-adaptive-router" or not isinstance(version, str):
+        raise ValueError("manifest identity/version is invalid")
+    if version != RELEASE_VERSION and CACHEBUSTER_VERSION.fullmatch(version) is None:
         raise ValueError("manifest identity/version is invalid")
     mcp = load_json(PLUGIN_ROOT / ".mcp.json")
     router_mcp = mcp.get("mcpServers", {}).get("adaptive_router")

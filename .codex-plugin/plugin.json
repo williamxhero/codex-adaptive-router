@@ -1,6 +1,6 @@
 {
   "name": "codex-adaptive-router",
-  "version": "1.3.0",
+  "version": "1.3.0+codex.20260826071825",
   "description": "Thin Root, recursive dispatch, token-aware routing, and privacy-bounded Outcome Intelligence for Codex.",
   "author": {
     "name": "williamxhero"
